@@ -1,0 +1,70 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import logging
+from config import config
+
+logger = logging.getLogger(__name__)
+
+class ManhwaBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        
+        super().__init__(
+            command_prefix='!',
+            intents=intents,
+            help_command=None
+        )
+    
+    async def setup_hook(self):
+        # Load cogs
+        await self.load_extension("cogs.works")
+        await self.load_extension("cogs.tasks")
+        await self.load_extension("cogs.earnings")
+        await self.load_extension("cogs.admin")
+        await self.load_extension("cogs.owner")
+        
+        # Sync commands - faster with guild if available
+        if config.GUILD_OBJ:
+            self.tree.copy_global_to(guild=config.GUILD_OBJ)
+            await self.tree.sync(guild=config.GUILD_OBJ)
+            logger.info(f"✅ Synced commands to guild {config.GUILD_ID}")
+        else:
+            await self.tree.sync()
+            logger.info("✅ Synced global commands")
+
+bot = ManhwaBot()
+
+@bot.event
+async def on_ready():
+    logger.info(f'✅ Bot online as {bot.user}')
+    await bot.change_presence(
+        activity=discord.Game(name="📚 إدارة فريق الترجمة"),
+        status=discord.Status.online
+    )
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ ليس لديك صلاحية")
+    elif isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ انتظر {error.retry_after:.1f} ثانية")
+    else:
+        logger.error(f"Command error: {error}")
+        await ctx.send("❌ حدث خطأ")
+
+@bot.event
+async def on_app_command_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ ليس لديك صلاحية", ephemeral=True)
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        await interaction.response.send_message(
+            f"⏳ انتظر {error.retry_after:.1f} ثانية", 
+            ephemeral=True
+        )
+    else:
+        logger.error(f"Slash error: {error}")
+        await interaction.response.send_message("❌ حدث خطأ", ephemeral=True)
