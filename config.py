@@ -8,12 +8,12 @@ class Config:
     if not DISCORD_TOKEN:
         raise ValueError("❌ DISCORD_TOKEN غير موجود في ملف .env")
     
-    # Owner ID يتم تحديده تلقائيًا عند تشغيل البوت
+    # Owner ID (يتم تعيينه يدوياً عبر الأمر)
     OWNER_ID = None
 
-    # ===== متغيرات إضافية للبوت =====
-    COMMAND_COOLDOWN = 3          # عدد الثواني بين الأوامر العادية
-    ADMIN_COOLDOWN = 2            # عدد الثواني بين أوامر الأدمن
-    MAX_PRICE = 10000             # أقصى سعر مسموح به للفصل
+    # إعدادات البوت
+    COMMAND_COOLDOWN = 3          # ثواني بين الأوامر العادية
+    ADMIN_COOLDOWN = 2            # ثواني بين أوامر الأدمن
+    MAX_PRICE = 10000              # أقصى سعر للفصل
 
 config = Config()
