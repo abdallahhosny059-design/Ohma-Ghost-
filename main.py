@@ -4,10 +4,8 @@ import logging
 import sys
 from datetime import datetime
 
-# Create logs folder first
 os.makedirs("logs", exist_ok=True)
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -25,10 +23,7 @@ from bot import bot
 
 async def main():
     try:
-        # Initialize database ONCE
         await db.initialize()
-        
-        # Start bot
         await bot.start(config.DISCORD_TOKEN)
     except Exception as e:
         logger.error(f"❌ Failed to start: {e}")
