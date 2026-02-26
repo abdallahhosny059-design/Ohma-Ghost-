@@ -19,10 +19,9 @@ class Database:
             return
 
         try:
-            # إنشاء اتصال واحد فقط طوال عمر البوت
             self.conn = await aiosqlite.connect(self.db_path)
 
-            # تفعيل الإعدادات المثلى لـ SQLite
+            # Optimize SQLite
             await self.conn.execute("PRAGMA foreign_keys = ON;")
             await self.conn.execute("PRAGMA journal_mode = WAL;")
             await self.conn.execute("PRAGMA busy_timeout = 5000;")
@@ -31,7 +30,7 @@ class Database:
             await self.conn.execute("PRAGMA temp_store = MEMORY;")
             self.conn.row_factory = aiosqlite.Row
 
-            # إنشاء الجداول
+            # Create tables
             await self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
@@ -41,7 +40,6 @@ class Database:
                     is_banned INTEGER DEFAULT 0
                 )
             ''')
-
             await self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS works (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +50,6 @@ class Database:
                     is_active INTEGER DEFAULT 1
                 )
             ''')
-
             await self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +72,6 @@ class Database:
                     FOREIGN KEY (work) REFERENCES works (name) ON DELETE RESTRICT
                 )
             ''')
-
             await self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS chapters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,7 +88,6 @@ class Database:
                     UNIQUE(user_id, work, chapter)
                 )
             ''')
-
             await self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +100,7 @@ class Database:
                 )
             ''')
 
-            # إنشاء الفهارس للأداء
+            # Indexes
             await self.conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_tasks_user_status 
                 ON tasks(user_id, status)
@@ -114,7 +109,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_tasks_work_chapter 
                 ON tasks(work, chapter)
             ''')
-            # فهرس فريد للمهام المعلقة والمسلمة (يمنع التكرار)
             await self.conn.execute('''
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_unique_pending 
                 ON tasks(user_id, work, chapter) 
@@ -144,25 +138,21 @@ class Database:
             raise
 
     async def close(self):
-        """إغلاق الاتصال بقاعدة البيانات بشكل آمن"""
         if self.conn:
             await self.conn.close()
             self.conn = None
             self.initialized = False
 
-    # ========== دوال مساعدة ==========
     def _now(self):
-        """إرجاع الوقت الحالي بصيغة ISO 8601 (متوافقة مع SQLite)"""
         return datetime.utcnow().isoformat()
 
-    # ========== عمليات المستخدمين ==========
+    # ========== User Operations ==========
     async def get_or_create_user(self, user_id: str, username: str, display_name: str = None):
         async with self.lock:
             cursor = await self.conn.execute(
                 "SELECT * FROM users WHERE user_id = ?", (user_id,)
             )
             user = await cursor.fetchone()
-
             if not user:
                 await self.conn.execute(
                     '''INSERT INTO users (user_id, username, display_name, joined_at, is_banned)
@@ -177,17 +167,15 @@ class Database:
                     "joined_at": self._now(),
                     "is_banned": False
                 }
-
             if display_name and user["display_name"] != display_name:
                 await self.conn.execute(
                     "UPDATE users SET display_name = ? WHERE user_id = ?",
                     (display_name, user_id)
                 )
                 await self.conn.commit()
-
             return dict(user)
 
-    # ========== عمليات الأعمال ==========
+    # ========== Work Operations ==========
     async def add_work(self, name: str, link: str, added_by: int):
         try:
             async with self.lock:
@@ -227,10 +215,9 @@ class Database:
                 return True
             return False
 
-    # ========== عمليات المهام ==========
+    # ========== Task Operations ==========
     async def create_task(self, user_id: str, username: str, display_name: str,
                           work: str, chapter: int, price: int, assigned_by: int):
-        # التحقق من المدخلات
         if price <= 0 or price > 10000:
             return False, "❌ السعر يجب أن يكون بين 1 و 10000"
         if chapter <= 0:
@@ -244,7 +231,6 @@ class Database:
 
         async with self.lock:
             try:
-                # استخدام INSERT OR IGNORE لمنع التكرار
                 await self.conn.execute(
                     '''INSERT OR IGNORE INTO tasks
                        (user_id, username, display_name, work, chapter, price,
@@ -254,7 +240,6 @@ class Database:
                      "pending", assigned_by, self._now())
                 )
                 await self.conn.commit()
-
                 if self.conn.total_changes > 0:
                     await self.log_action(
                         "create_task", assigned_by, target_id=user_id,
@@ -374,7 +359,7 @@ class Database:
                 return True
             return False
 
-    # ========== إحصائيات ==========
+    # ========== Stats Operations ==========
     async def get_user_stats(self, user_id: str):
         cursor = await self.conn.execute(
             "SELECT COALESCE(SUM(price), 0) as total, COUNT(*) as count FROM chapters WHERE user_id = ?",
@@ -452,7 +437,7 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    # ========== تسجيل الأحداث (Logging) ==========
+    # ========== Logging ==========
     async def log_action(self, action: str, user_id: int, target_id: str = None,
                          details: dict = None, log_type: str = "normal"):
         async with self.lock:
@@ -483,6 +468,5 @@ class Database:
                 await self.conn.execute("ROLLBACK")
                 logger.error(f"Error deleting logs: {e}")
 
-
-# ✅ إنشاء النسخة العامة من قاعدة البيانات (يجب أن يكون في نهاية الملف)
+# ✅ إنشاء النسخة العامة من قاعدة البيانات
 db = Database()
