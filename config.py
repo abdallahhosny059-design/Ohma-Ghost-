@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import discord
 
 load_dotenv()
 
@@ -8,11 +9,6 @@ class Config:
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
     if not DISCORD_TOKEN:
         raise ValueError("❌ DISCORD_TOKEN غير موجود في ملف .env")
-    
-    # MongoDB
-    MONGODB_URI = os.getenv("MONGODB_URI")
-    if not MONGODB_URI:
-        raise ValueError("❌ MONGODB_URI غير موجود في ملف .env")
     
     # Owner
     OWNER_ID = int(os.getenv("OWNER_ID", "0"))
