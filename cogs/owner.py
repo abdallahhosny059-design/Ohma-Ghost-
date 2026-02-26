@@ -3,16 +3,16 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 from database import db
-from config import config
 
 logger = logging.getLogger(__name__)
 
 def is_owner():
     async def predicate(interaction: discord.Interaction):
-        if config.OWNER_ID is None:
-            await interaction.response.send_message("⚠️ لا يوجد أونر محدد. استخدم /set_owner لتعيين نفسك.", ephemeral=True)
+        owner_id = await db.get_owner()
+        if owner_id is None:
+            await interaction.response.send_message("⚠️ لم يتم تعيين الأونر بعد. استخدم /set_owner لتعيينه.", ephemeral=True)
             return False
-        if interaction.user.id == config.OWNER_ID:
+        if interaction.user.id == owner_id:
             return True
         await interaction.response.send_message("❌ هذا الأمر للأونر فقط", ephemeral=True)
         return False
@@ -22,17 +22,21 @@ class OwnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="set_owner", description="تعيين نفسك كأونر للبوت (لأول مرة)")
+    @app_commands.command(name="set_owner", description="تعيين نفسك كأونر للبوت (مرة واحدة فقط)")
     async def set_owner(self, interaction: discord.Interaction):
-        if config.OWNER_ID is not None:
-            await interaction.response.send_message("❌ الأونر محدد مسبقاً.", ephemeral=True)
+        # تحقق مما إذا كان الأونر موجوداً بالفعل
+        existing_owner = await db.get_owner()
+        if existing_owner is not None:
+            await interaction.response.send_message("❌ الأونر محدد مسبقاً ولا يمكن تغييره.", ephemeral=True)
             return
-        
-        config.OWNER_ID = interaction.user.id
-        await interaction.response.send_message(f"✅ تم تعيينك كأونر للبوت! (ID: {config.OWNER_ID})", ephemeral=True)
-        logger.info(f"👑 Owner set to {interaction.user.name} (ID: {config.OWNER_ID}) via command.")
 
-    # ========== أوامر إدارة الأدمن ==========
+        success = await db.set_owner(interaction.user.id)
+        if success:
+            await interaction.response.send_message(f"✅ تم تعيينك كأونر للبوت! (ID: {interaction.user.id})", ephemeral=True)
+            logger.info(f"👑 Owner set to {interaction.user.name} (ID: {interaction.user.id}) via command.")
+        else:
+            await interaction.response.send_message("❌ حدث خطأ أثناء تعيين الأونر.", ephemeral=True)
+
     @is_owner()
     @app_commands.command(name="اضافة_ادمن", description="إضافة عضو كأدمن في البوت (الأونر فقط)")
     @app_commands.describe(member="العضو المراد إضافته")
@@ -63,30 +67,31 @@ class OwnerCog(commands.Cog):
         if not admins:
             await interaction.followup.send("📭 لا يوجد أدمن حالياً.", ephemeral=True)
             return
-        
+
         embed = discord.Embed(title="👥 قائمة الأدمن", color=discord.Color.blue())
         for admin in admins:
             user = self.bot.get_user(int(admin["user_id"]))
             name = user.name if user else f"Unknown ({admin['user_id']})"
             embed.add_field(name=name, value=f"منذ: {admin['added_at']}", inline=False)
-        
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="حذف_السجلات", description="حذف جميع السجلات (الأونر فقط)")
     @is_owner()
+    @app_commands.command(name="حذف_السجلات", description="حذف جميع السجلات (الأونر فقط)")
     async def delete_logs(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await db.delete_all_logs(interaction.user.id)
         await interaction.followup.send("✅ تم حذف جميع السجلات (ما عدا المالية)", ephemeral=True)
 
-    @app_commands.command(name="حالة_البوت", description="عرض حالة البوت (الأونر فقط)")
     @is_owner()
+    @app_commands.command(name="حالة_البوت", description="عرض حالة البوت (الأونر فقط)")
     async def status_command(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
+        owner_id = await db.get_owner()
         embed = discord.Embed(title="🤖 حالة البوت", color=discord.Color.green())
         embed.add_field(name="⏰ وقت التشغيل", value="شغال", inline=True)
-        embed.add_field(name="👤 الأونر", value=f"<@{config.OWNER_ID}>" if config.OWNER_ID else "لم يحدد", inline=True)
+        embed.add_field(name="👤 الأونر", value=f"<@{owner_id}>" if owner_id else "لم يحدد", inline=True)
 
         try:
             async with db.conn.execute("SELECT COUNT(*) FROM users") as cursor:
