@@ -21,7 +21,6 @@ class Database:
             return
 
         try:
-            # اتصال البيانات (للمعاملات الحساسة)
             self.data_conn = await aiosqlite.connect(self.db_path)
             await self.data_conn.execute("PRAGMA foreign_keys = ON;")
             await self.data_conn.execute("PRAGMA journal_mode = WAL;")
@@ -31,14 +30,13 @@ class Database:
             await self.data_conn.execute("PRAGMA temp_store = MEMORY;")
             self.data_conn.row_factory = aiosqlite.Row
 
-            # اتصال السجلات العامة (منفصل)
             self.log_conn = await aiosqlite.connect(self.db_path)
             await self.log_conn.execute("PRAGMA journal_mode = WAL;")
             await self.log_conn.execute("PRAGMA busy_timeout = 5000;")
             await self.log_conn.execute("PRAGMA synchronous = NORMAL;")
             self.log_conn.row_factory = aiosqlite.Row
 
-            # إنشاء الجداول (مرة واحدة)
+            # إنشاء الجداول
             await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
@@ -141,10 +139,10 @@ class Database:
 
             await self.data_conn.commit()
             self.initialized = True
-            logger.info("✅ Database ready with separate connections and indexes")
+            logger.info("✅ Database initialized successfully")
 
         except Exception as e:
-            logger.error(f"❌ Database init error: {e}")
+            logger.error(f"❌ Database initialization error: {e}")
             if self.data_conn:
                 await self.data_conn.close()
             if self.log_conn:
@@ -161,12 +159,20 @@ class Database:
     def _now(self):
         return datetime.utcnow().isoformat()
 
-    # ================== دوال داخلية بدون lock (للاستخدام داخل data_lock) ==================
+    # ========== دوال داخلية (بدون قفل) ==========
     async def _get_work_by_id(self, work_id: int):
         cursor = await self.data_conn.execute(
             "SELECT * FROM works WHERE id = ? AND is_active = 1", (work_id,)
         )
         return await cursor.fetchone()
+
+    async def _get_work_id_by_name(self, name: str):
+        cursor = await self.data_conn.execute(
+            "SELECT id FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+            (name,)
+        )
+        row = await cursor.fetchone()
+        return row["id"] if row else None
 
     async def _get_user(self, user_id: str):
         cursor = await self.data_conn.execute(
@@ -187,10 +193,9 @@ class Database:
             (display_name, user_id)
         )
 
-    # ================== التسجيل العام (خارج المعاملات) ==================
+    # ========== التسجيل العام ==========
     async def log_action(self, action: str, user_id: str, target_id: str = None,
                          details: dict = None, log_type: str = "normal", max_retries=3):
-        """تسجيل حدث غير مالي على اتصال السجلات مع إعادة محاولة تلقائية"""
         for attempt in range(max_retries):
             try:
                 async with self.log_lock:
@@ -207,7 +212,7 @@ class Database:
                 else:
                     await asyncio.sleep(0.1 * (2 ** attempt))
 
-    # ================== المستخدمون ==================
+    # ========== المستخدمون ==========
     async def get_or_create_user(self, user_id: str, username: str, display_name: str = None):
         async with self.data_lock:
             user = await self._get_user(user_id)
@@ -226,9 +231,8 @@ class Database:
                 await self.data_conn.commit()
             return dict(user)
 
-    # نسخة داخلية للاستخدام داخل data_lock (بدون قفل إضافي)
     async def _get_or_create_user(self, user_id: str, username: str, display_name: str = None):
-        """يجب استدعاؤها فقط داخل data_lock"""
+        # للاستخدام داخل data_lock فقط
         user = await self._get_user(user_id)
         if not user:
             await self._create_user(user_id, username, display_name or username)
@@ -245,7 +249,7 @@ class Database:
             await self.data_conn.commit()
         return dict(user)
 
-    # ================== إدارة الأدمن ==================
+    # ========== إدارة الأدمن ==========
     async def add_admin(self, user_id: str, added_by: str) -> bool:
         async with self.data_lock:
             cursor = await self.data_conn.execute(
@@ -255,7 +259,6 @@ class Database:
             await self.data_conn.commit()
             success = cursor.rowcount > 0
         if success:
-            # تسجيل خارج القفل لتجنب deadlock
             asyncio.create_task(self.log_action("add_admin", added_by, details={"target_id": user_id}))
         return success
 
@@ -285,7 +288,7 @@ class Database:
             rows = await cursor.fetchall()
             return [{"user_id": row[0], "added_at": row[1]} for row in rows]
 
-    # ================== الأعمال ==================
+    # ========== الأعمال ==========
     async def add_work(self, name: str, link: str, added_by: str):
         try:
             async with self.data_lock:
@@ -333,7 +336,7 @@ class Database:
             asyncio.create_task(self.log_action("delete_work", deleted_by, details={"name": name}))
         return success
 
-    # ================== المهام ==================
+    # ========== المهام (مع دوال مساعدة تستقبل اسم العمل) ==========
     async def create_task(self, user_id: str, username: str, display_name: str,
                           work_name: str, chapter: int, price: int, assigned_by: str):
         if price <= 0 or price > 10000:
@@ -342,17 +345,10 @@ class Database:
             return False, "❌ رقم الفصل غير صالح"
 
         async with self.data_lock:
-            # جلب العمل
-            work = await self.data_conn.execute(
-                "SELECT id FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1",
-                (work_name,)
-            )
-            work_row = await work.fetchone()
-            if not work_row:
+            work_id = await self._get_work_id_by_name(work_name)
+            if not work_id:
                 return False, "❌ العمل غير موجود"
-            work_id = work_row["id"]
 
-            # إنشاء/تحديث المستخدم (باستخدام النسخة الداخلية)
             await self._get_or_create_user(user_id, username, display_name)
 
             try:
@@ -409,13 +405,14 @@ class Database:
                 ("submitted", self._now(), user_id, work_id, chapter)
             )
             await self.data_conn.commit()
-            success = cursor.rowcount > 0
-        if success:
-            asyncio.create_task(self.log_action(
-                "submit_task", user_id,
-                details={"work_id": work_id, "chapter": chapter, "success": success}
-            ))
-        return success
+            return cursor.rowcount > 0
+
+    async def submit_task_by_name(self, user_id: str, work_name: str, chapter: int):
+        async with self.data_lock:
+            work_id = await self._get_work_id_by_name(work_name)
+            if not work_id:
+                return False
+            return await self.submit_task(user_id, work_id, chapter)
 
     async def approve_task(self, user_id: str, work_id: int, chapter: int, approved_by: str, max_retries=3):
         for attempt in range(max_retries):
@@ -423,7 +420,6 @@ class Database:
                 async with self.data_lock:
                     await self.data_conn.execute("BEGIN IMMEDIATE")
 
-                    # جلب المهمة
                     cursor = await self.data_conn.execute(
                         """
                         SELECT * FROM tasks
@@ -445,7 +441,6 @@ class Database:
                         await self.data_conn.execute("ROLLBACK")
                         return None
 
-                    # تحديث المهمة مع التحقق من الحالة
                     cursor2 = await self.data_conn.execute(
                         """
                         UPDATE tasks
@@ -459,7 +454,6 @@ class Database:
                         logger.warning("Approve task race: status changed")
                         return None
 
-                    # إدراج الفصل
                     try:
                         await self.data_conn.execute(
                             """
@@ -475,7 +469,6 @@ class Database:
                         logger.error(f"Failed to insert chapter: {e}")
                         return None
 
-                    # تسجيل مالي داخل المعاملة (على data_conn)
                     await self.data_conn.execute(
                         '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
                            VALUES (?, ?, ?, ?, ?, ?)''',
@@ -502,6 +495,13 @@ class Database:
                 return None
         return None
 
+    async def approve_task_by_name(self, user_id: str, work_name: str, chapter: int, approved_by: str):
+        async with self.data_lock:
+            work_id = await self._get_work_id_by_name(work_name)
+            if not work_id:
+                return None
+        return await self.approve_task(user_id, work_id, chapter, approved_by)
+
     async def reject_task(self, user_id: str, work_id: int, chapter: int,
                           rejected_by: str, reason: str):
         async with self.data_lock:
@@ -515,15 +515,17 @@ class Database:
                 (rejected_by, self._now(), reason, user_id, work_id, chapter)
             )
             await self.data_conn.commit()
-            success = cursor.rowcount > 0
-        if success:
-            asyncio.create_task(self.log_action(
-                "reject_task", rejected_by, target_id=user_id,
-                details={"work_id": work_id, "chapter": chapter, "reason": reason}
-            ))
-        return success
+            return cursor.rowcount > 0
 
-    # ================== الإحصائيات ==================
+    async def reject_task_by_name(self, user_id: str, work_name: str, chapter: int,
+                                   rejected_by: str, reason: str):
+        async with self.data_lock:
+            work_id = await self._get_work_id_by_name(work_name)
+            if not work_id:
+                return False
+            return await self.reject_task(user_id, work_id, chapter, rejected_by, reason)
+
+    # ========== الإحصائيات ==========
     async def get_user_stats(self, user_id: str):
         async with self.data_lock:
             cursor = await self.data_conn.execute(
@@ -608,7 +610,7 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    # ================== إدارة السجلات ==================
+    # ========== إدارة السجلات ==========
     async def delete_all_logs(self, user_id: str):
         async with self.data_lock:
             try:
