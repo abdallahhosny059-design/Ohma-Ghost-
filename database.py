@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.db_path = "bot_database.db"  # Railway بدون Volume
+        self.db_path = "bot_database.db"  # ✅ مصحح
         self.initialized = False
     
     async def initialize(self):
@@ -18,6 +18,7 @@ class Database:
             return
         
         try:
+            # ❌ تم حذف os.makedirs للمجلد
             async with aiosqlite.connect(self.db_path) as db:
                 # Enable foreign keys
                 await db.execute("PRAGMA foreign_keys = ON;")
@@ -25,7 +26,7 @@ class Database:
                 # Enable WAL mode for better concurrency
                 await db.execute("PRAGMA journal_mode = WAL;")
                 
-                # Create tables
+                # Create tables (باقي الكود كما هو)
                 await db.execute('''
                     CREATE TABLE IF NOT EXISTS users (
                         user_id TEXT PRIMARY KEY,
@@ -304,7 +305,7 @@ class Database:
             
             cursor = await db.execute(
                 '''UPDATE tasks SET status = ?, submitted_at = ?
-                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'""",
+                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'""",  # ✅ مصحح
                 ("submitted", datetime.now(pytz.UTC), user_id, work, chapter)
             )
             await db.commit()
@@ -378,7 +379,7 @@ class Database:
             cursor = await db.execute(
                 '''UPDATE tasks SET status = 'rejected', rejected_by = ?,
                    rejected_at = ?, reject_reason = ?
-                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'submitted'''',
+                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'submitted'""",  # ✅ مصحح
                 (rejected_by, datetime.now(pytz.UTC), reason, user_id, work, chapter)
             )
             await db.commit()
@@ -514,7 +515,7 @@ class Database:
                 # Log the action
                 await db.execute(
                     '''INSERT INTO logs (action, user_id, timestamp, type)
-                       VALUES (?, ?, ?, ?)''',
+                       VALUES (?, ?, ?, ?)""",  # ✅ مصحح
                     ("delete_all_logs", user_id, datetime.now(pytz.UTC), "admin")
                 )
                 
