@@ -15,8 +15,6 @@ def is_admin():
             pass
         if interaction.user.guild_permissions.administrator:
             return True
-        
-        # التحقق قبل الإرسال
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ هذا الأمر يتطلب صلاحية أدمن في البوت أو في السيرفر", ephemeral=True)
         return False
@@ -31,9 +29,8 @@ class WorksCog(commands.Cog):
     @is_admin()
     async def add_work(self, interaction: discord.Interaction, name: str, link: str):
         await interaction.response.defer()
-
         try:
-            success, message = await db.add_work(name, link, interaction.user.id)
+            success, message = await db.add_work(name, link, str(interaction.user.id))
             embed = discord.Embed(
                 title="✅ تمت الإضافة" if success else "❌ فشل",
                 description=message,
@@ -48,9 +45,8 @@ class WorksCog(commands.Cog):
     @app_commands.describe(name="اسم العمل")
     async def search_work(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-
         try:
-            work = await db.get_work(name)
+            work = await db.get_work_by_name(name)
             if work:
                 embed = discord.Embed(
                     title=f"📚 {work['name']}",
@@ -80,9 +76,8 @@ class WorksCog(commands.Cog):
     @is_admin()
     async def delete_work(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-
         try:
-            success = await db.delete_work(name, interaction.user.id)
+            success = await db.delete_work(name, str(interaction.user.id))
             if success:
                 await interaction.followup.send(f"✅ تم حذف **{name}**")
             else:
