@@ -1,17 +1,16 @@
-import re
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ASCENDING, DESCENDING
+import aiosqlite
+import asyncio
 import logging
 from datetime import datetime, timedelta
 import pytz
-from config import config
+import json
+import os
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.client = None
-        self.db = None
+        self.db_path = "/data/bot_database.db"  # Railway Volume path
         self.initialized = False
     
     async def initialize(self):
@@ -19,469 +18,517 @@ class Database:
             return
         
         try:
-            self.client = AsyncIOMotorClient(
-                config.MONGODB_URI,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=5000,
-                maxPoolSize=10
-            )
+            # Ensure data directory exists
+            os.makedirs("/data", exist_ok=True)
             
-            await self.client.admin.command('ping')
-            
-            self.db = self.client[config.DB_NAME]
-            
-            # Collections
-            self.users = self.db['users']
-            self.works = self.db['works']
-            self.tasks = self.db['tasks']
-            self.chapters = self.db['chapters']
-            self.logs = self.db['logs']
-            
-            await self._create_indexes()
+            async with aiosqlite.connect(self.db_path) as db:
+                # Enable foreign keys
+                await db.execute("PRAGMA foreign_keys = ON;")
+                
+                # Enable WAL mode for better concurrency
+                await db.execute("PRAGMA journal_mode = WAL;")
+                
+                # Create tables
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id TEXT PRIMARY KEY,
+                        username TEXT NOT NULL,
+                        display_name TEXT,
+                        joined_at TIMESTAMP NOT NULL,
+                        is_banned INTEGER DEFAULT 0
+                    )
+                ''')
+                
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS works (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        link TEXT NOT NULL,
+                        added_by INTEGER NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        is_active INTEGER DEFAULT 1
+                    )
+                ''')
+                
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        username TEXT NOT NULL,
+                        display_name TEXT,
+                        work TEXT NOT NULL,
+                        chapter INTEGER NOT NULL,
+                        price INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        assigned_by INTEGER NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        submitted_at TIMESTAMP,
+                        approved_at TIMESTAMP,
+                        rejected_at TIMESTAMP,
+                        approved_by INTEGER,
+                        rejected_by INTEGER,
+                        reject_reason TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE RESTRICT,
+                        FOREIGN KEY (work) REFERENCES works (name) ON DELETE RESTRICT,
+                        UNIQUE(user_id, work, chapter, status) 
+                        WHERE status IN ('pending', 'submitted')
+                    )
+                ''')
+                
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS chapters (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        username TEXT NOT NULL,
+                        display_name TEXT,
+                        work TEXT NOT NULL,
+                        chapter INTEGER NOT NULL,
+                        price INTEGER NOT NULL,
+                        approved_by INTEGER NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE RESTRICT,
+                        FOREIGN KEY (work) REFERENCES works (name) ON DELETE RESTRICT,
+                        UNIQUE(user_id, work, chapter)
+                    )
+                ''')
+                
+                await db.execute('''
+                    CREATE TABLE IF NOT EXISTS logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        action TEXT NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        target_id TEXT,
+                        details TEXT,
+                        timestamp TIMESTAMP NOT NULL,
+                        type TEXT DEFAULT 'normal'
+                    )
+                ''')
+                
+                # Create indexes for performance
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_tasks_user_status 
+                    ON tasks(user_id, status)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_tasks_work_chapter 
+                    ON tasks(work, chapter)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_chapters_user_date 
+                    ON chapters(user_id, created_at DESC)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_logs_timestamp 
+                    ON logs(timestamp)
+                ''')
+                
+                await db.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_logs_type 
+                    ON logs(type)
+                ''')
+                
+                await db.commit()
             
             self.initialized = True
-            logger.info("✅ Database connected")
+            logger.info("✅ SQLite database connected and optimized")
             
         except Exception as e:
             logger.error(f"❌ Database error: {e}")
             raise
     
-    async def _create_indexes(self):
-        """Create all indexes"""
-        
-        # Users
-        await self.users.create_index("user_id", unique=True)
-        
-        # Works
-        await self.works.create_index("name", unique=True)
-        
-        # Tasks - unique per user/work/chapter for non-rejected tasks
-        await self.tasks.create_index(
-            [("user_id", ASCENDING), ("work", ASCENDING), ("chapter", ASCENDING)],
-            unique=True,
-            partialFilterExpression={"status": {"$ne": "rejected"}}
-        )
-        await self.tasks.create_index("status")
-        await self.tasks.create_index("created_at")
-        
-        # Chapters - unique per user/work/chapter
-        await self.chapters.create_index(
-            [("user_id", ASCENDING), ("work", ASCENDING), ("chapter", ASCENDING)],
-            unique=True
-        )
-        await self.chapters.create_index("created_at")
-        
-        # Logs - financial logs never expire
-        await self.logs.create_index("timestamp")
-        await self.logs.create_index("type")
-        
-        logger.info("✅ Indexes created")
-    
     # ========== User Operations ==========
     async def get_or_create_user(self, user_id: str, username: str, display_name: str = None):
-        user = await self.users.find_one({"user_id": user_id})
-        if not user:
-            user = {
-                "user_id": user_id,
-                "username": username,
-                "display_name": display_name or username,
-                "joined_at": datetime.now(pytz.UTC),
-                "is_banned": False
-            }
-            await self.users.insert_one(user)
-        elif display_name and user.get("display_name") != display_name:
-            # Update display name if changed
-            await self.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"display_name": display_name}}
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE user_id = ?",
+                (user_id,)
             )
-            user["display_name"] = display_name
-        return user
+            user = await cursor.fetchone()
+            
+            if not user:
+                await db.execute(
+                    '''INSERT INTO users (user_id, username, display_name, joined_at, is_banned)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (user_id, username, display_name or username, datetime.now(pytz.UTC), 0)
+                )
+                await db.commit()
+                
+                return {
+                    "user_id": user_id,
+                    "username": username,
+                    "display_name": display_name or username,
+                    "joined_at": datetime.now(pytz.UTC),
+                    "is_banned": False
+                }
+            
+            # Update display name if changed
+            if display_name and user["display_name"] != display_name:
+                await db.execute(
+                    "UPDATE users SET display_name = ? WHERE user_id = ?",
+                    (display_name, user_id)
+                )
+                await db.commit()
+            
+            return dict(user)
     
     # ========== Work Operations ==========
     async def add_work(self, name: str, link: str, added_by: int):
         try:
-            await self.works.insert_one({
-                "name": name,
-                "link": link,
-                "added_by": added_by,
-                "created_at": datetime.now(pytz.UTC),
-                "is_active": True
-            })
-            
-            await self.log_action(
-                "add_work",
-                added_by,
-                details={"name": name, "link": link}
-            )
-            
-            return True, "✅ تمت الإضافة"
-        except:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA foreign_keys = ON;")
+                
+                await db.execute(
+                    '''INSERT INTO works (name, link, added_by, created_at, is_active)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (name, link, added_by, datetime.now(pytz.UTC), 1)
+                )
+                await db.commit()
+                
+                await self.log_action("add_work", added_by, details={"name": name, "link": link})
+                return True, "✅ تمت الإضافة"
+        except Exception as e:
             return False, "❌ العمل موجود مسبقاً"
     
     async def get_work(self, name: str):
-        work = await self.works.find_one({
-            "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
-            "is_active": True
-        })
-        return work
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            cursor = await db.execute(
+                "SELECT * FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+                (name,)
+            )
+            return await cursor.fetchone()
     
     async def search_works(self, query: str):
-        safe_query = re.escape(query)
-        cursor = self.works.find({
-            "name": {"$regex": safe_query, "$options": "i"},
-            "is_active": True
-        }).limit(10)
-        return await cursor.to_list(length=10)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            cursor = await db.execute(
+                "SELECT * FROM works WHERE LOWER(name) LIKE LOWER(?) AND is_active = 1 LIMIT 10",
+                (f"%{query}%",)
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
     
     async def delete_work(self, name: str, deleted_by: int):
-        # Case insensitive delete
-        work = await self.works.find_one({
-            "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
-            "is_active": True
-        })
-        
-        if not work:
-            return False
-        
-        result = await self.works.update_one(
-            {"_id": work["_id"]},
-            {"$set": {"is_active": False, "deleted_by": deleted_by}}
-        )
-        
-        if result.modified_count > 0:
-            await self.log_action(
-                "delete_work",
-                deleted_by,
-                details={"name": work["name"]}
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
+            cursor = await db.execute(
+                "UPDATE works SET is_active = 0 WHERE LOWER(name) = LOWER(?)",
+                (name,)
             )
-            return True
-        return False
+            if cursor.rowcount > 0:
+                await db.commit()
+                await self.log_action("delete_work", deleted_by, details={"name": name})
+                return True
+            return False
     
     # ========== Task Operations ==========
     async def create_task(self, user_id: str, username: str, display_name: str,
                          work: str, chapter: int, price: int, assigned_by: int):
+        # Validate inputs
+        if price <= 0 or price > 10000:
+            return False, "❌ السعر يجب أن يكون بين 1 و 10000"
+        
+        if chapter <= 0:
+            return False, "❌ رقم الفصل غير صالح"
+        
+        # Check if work exists
+        work_doc = await self.get_work(work)
+        if not work_doc:
+            return False, "❌ العمل غير موجود"
+        
+        # Get or create user
+        await self.get_or_create_user(user_id, username, display_name)
+        
         try:
-            # Validate price
-            if price <= 0 or price > config.MAX_PRICE:
-                return False, f"❌ السعر يجب أن يكون بين 1 و {config.MAX_PRICE}"
-            
-            # Validate chapter
-            if chapter <= 0:
-                return False, "❌ رقم الفصل غير صالح"
-            
-            # Check if work exists
-            work_doc = await self.get_work(work)
-            if not work_doc:
-                return False, "❌ العمل غير موجود"
-            
-            # Get or create user
-            await self.get_or_create_user(user_id, username, display_name)
-            
-            await self.tasks.insert_one({
-                "user_id": user_id,
-                "username": username,
-                "display_name": display_name,
-                "work": work,
-                "chapter": chapter,
-                "price": price,
-                "status": "pending",
-                "assigned_by": assigned_by,
-                "created_at": datetime.now(pytz.UTC)
-            })
-            
-            await self.log_action(
-                "create_task",
-                assigned_by,
-                target_id=user_id,
-                details={"work": work, "chapter": chapter, "price": price}
-            )
-            
-            return True, "✅ تم التكليف"
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA foreign_keys = ON;")
+                
+                # Check for existing pending/submitted task
+                cursor = await db.execute(
+                    '''SELECT id FROM tasks 
+                       WHERE user_id = ? AND work = ? AND chapter = ? 
+                       AND status IN ('pending', 'submitted')''',
+                    (user_id, work_doc["name"], chapter)
+                )
+                if await cursor.fetchone():
+                    return False, "❌ هذا الفصل مكلف بالفعل"
+                
+                await db.execute(
+                    '''INSERT INTO tasks 
+                       (user_id, username, display_name, work, chapter, price, 
+                        status, assigned_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (user_id, username, display_name, work_doc["name"], chapter, price,
+                     "pending", assigned_by, datetime.now(pytz.UTC))
+                )
+                await db.commit()
+                
+                await self.log_action(
+                    "create_task", assigned_by, target_id=user_id,
+                    details={"work": work_doc["name"], "chapter": chapter, "price": price}
+                )
+                return True, "✅ تم التكليف"
         except Exception as e:
             logger.error(f"Error creating task: {e}")
-            return False, "❌ هذا الفصل مكلف بالفعل لهذا العضو"
+            return False, "❌ حدث خطأ"
     
     async def get_user_tasks(self, user_id: str, status: str = None):
-        query = {"user_id": user_id}
-        if status:
-            query["status"] = status
-        cursor = self.tasks.find(query).sort("created_at", DESCENDING)
-        return await cursor.to_list(length=50)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            if status:
+                cursor = await db.execute(
+                    "SELECT * FROM tasks WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
+                    (user_id, status)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,)
+                )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
     
     async def submit_task(self, user_id: str, work: str, chapter: int):
-        result = await self.tasks.find_one_and_update(
-            {
-                "user_id": user_id,
-                "work": work,
-                "chapter": chapter,
-                "status": "pending"
-            },
-            {
-                "$set": {
-                    "status": "submitted",
-                    "submitted_at": datetime.now(pytz.UTC)
-                }
-            },
-            return_document=True
-        )
-        
-        # Single source of truth for logging
-        await self.log_action(
-            "submit_task",
-            int(user_id),
-            details={
-                "work": work, 
-                "chapter": chapter, 
-                "success": result is not None
-            },
-            log_type="normal"
-        )
-        
-        return result
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
+            cursor = await db.execute(
+                '''UPDATE tasks SET status = ?, submitted_at = ?
+                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'''',
+                ("submitted", datetime.now(pytz.UTC), user_id, work, chapter)
+            )
+            await db.commit()
+            
+            success = cursor.rowcount > 0
+            await self.log_action(
+                "submit_task", int(user_id),
+                details={"work": work, "chapter": chapter, "success": success}
+            )
+            return success
     
     async def approve_task(self, user_id: str, work: str, chapter: int, approved_by: int):
-        async with await self.client.start_session() as session:
-            async with session.start_transaction():
-                
-                # Check if user exists
-                user = await self.users.find_one({"user_id": user_id}, session=session)
-                if not user:
-                    await session.abort_transaction()
-                    return None
-                
-                # Update task with strict conditions to prevent race condition
-                task = await self.tasks.find_one_and_update(
-                    {
-                        "user_id": user_id,
-                        "work": work,
-                        "chapter": chapter,
-                        "status": "submitted",
-                        "approved_at": {"$exists": False}  # Ensure not already approved
-                    },
-                    {
-                        "$set": {
-                            "status": "approved",
-                            "approved_by": approved_by,
-                            "approved_at": datetime.now(pytz.UTC)
-                        }
-                    },
-                    session=session,
-                    return_document=True
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            # Start transaction
+            await db.execute("BEGIN")
+            
+            try:
+                # Get and lock the task
+                cursor = await db.execute(
+                    '''SELECT * FROM tasks 
+                       WHERE user_id = ? AND work = ? AND chapter = ? 
+                       AND status = 'submitted' AND approved_at IS NULL''',
+                    (user_id, work, chapter)
                 )
+                task = await cursor.fetchone()
                 
                 if not task:
-                    await session.abort_transaction()
+                    await db.execute("ROLLBACK")
                     return None
                 
-                # Create chapter record
-                try:
-                    await self.chapters.insert_one({
-                        "user_id": user_id,
-                        "username": task["username"],
-                        "display_name": task.get("display_name", task["username"]),
-                        "work": work,
-                        "chapter": chapter,
-                        "price": task["price"],
-                        "approved_by": approved_by,
-                        "created_at": datetime.now(pytz.UTC)
-                    }, session=session)
-                except:
-                    await session.abort_transaction()
-                    return None
-                
-                # Log financial transaction
-                await self.log_action(
-                    "financial_approve",
-                    approved_by,
-                    target_id=user_id,
-                    details={
-                        "work": work,
-                        "chapter": chapter,
-                        "price": task["price"]
-                    },
-                    log_type="financial",
-                    session=session
+                # Update task
+                await db.execute(
+                    '''UPDATE tasks SET status = 'approved', approved_by = ?, approved_at = ?
+                       WHERE id = ?''',
+                    (approved_by, datetime.now(pytz.UTC), task["id"])
                 )
                 
-                return task
+                # Insert chapter
+                await db.execute(
+                    '''INSERT INTO chapters 
+                       (user_id, username, display_name, work, chapter, price, approved_by, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (user_id, task["username"], task["display_name"], work, chapter,
+                     task["price"], approved_by, datetime.now(pytz.UTC))
+                )
+                
+                # Commit transaction
+                await db.commit()
+                
+                await self.log_action(
+                    "financial_approve", approved_by, target_id=user_id,
+                    details={"work": work, "chapter": chapter, "price": task["price"]},
+                    log_type="financial"
+                )
+                
+                return dict(task)
+                
+            except Exception as e:
+                await db.execute("ROLLBACK")
+                logger.error(f"Error in approve_task: {e}")
+                return None
     
-    async def reject_task(self, user_id: str, work: str, chapter: int, 
+    async def reject_task(self, user_id: str, work: str, chapter: int,
                          rejected_by: int, reason: str):
-        result = await self.tasks.find_one_and_update(
-            {
-                "user_id": user_id,
-                "work": work,
-                "chapter": chapter,
-                "status": "submitted"
-            },
-            {
-                "$set": {
-                    "status": "rejected",
-                    "rejected_by": rejected_by,
-                    "reject_reason": reason,
-                    "rejected_at": datetime.now(pytz.UTC)
-                }
-            },
-            return_document=True
-        )
-        
-        if result:
-            await self.log_action(
-                "reject_task",
-                rejected_by,
-                target_id=user_id,
-                details={"work": work, "chapter": chapter, "reason": reason}
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
+            cursor = await db.execute(
+                '''UPDATE tasks SET status = 'rejected', rejected_by = ?,
+                   rejected_at = ?, reject_reason = ?
+                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'submitted'''',
+                (rejected_by, datetime.now(pytz.UTC), reason, user_id, work, chapter)
             )
-        
-        return result
+            await db.commit()
+            
+            if cursor.rowcount > 0:
+                await self.log_action(
+                    "reject_task", rejected_by, target_id=user_id,
+                    details={"work": work, "chapter": chapter, "reason": reason}
+                )
+                return True
+            return False
     
     # ========== Stats Operations ==========
     async def get_user_stats(self, user_id: str):
-        # Get total via aggregation
-        pipeline = [
-            {"$match": {"user_id": user_id}},
-            {"$group": {
-                "_id": None,
-                "total_earned": {"$sum": "$price"},
-                "chapters_count": {"$sum": 1}
-            }}
-        ]
-        result = await self.chapters.aggregate(pipeline).to_list(length=1)
-        
-        if result:
-            total_earned = result[0]["total_earned"]
-            chapters_count = result[0]["chapters_count"]
-        else:
-            total_earned = 0
-            chapters_count = 0
-        
-        # Get recent chapters
-        recent = await self.chapters.find(
-            {"user_id": user_id}
-        ).sort("created_at", DESCENDING).limit(10).to_list(length=10)
-        
-        # Get pending/submitted tasks
-        pending = await self.tasks.count_documents({
-            "user_id": user_id,
-            "status": "pending"
-        })
-        submitted = await self.tasks.count_documents({
-            "user_id": user_id,
-            "status": "submitted"
-        })
-        
-        # Get user info for display name
-        user = await self.users.find_one({"user_id": user_id})
-        display_name = user.get("display_name") if user else None
-        
-        return {
-            "total_earned": total_earned,
-            "chapters_count": chapters_count,
-            "recent_chapters": recent,
-            "pending_tasks": pending,
-            "submitted_tasks": submitted,
-            "display_name": display_name
-        }
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            # Get totals
+            cursor = await db.execute(
+                "SELECT COALESCE(SUM(price), 0) as total, COUNT(*) as count FROM chapters WHERE user_id = ?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            
+            # Recent chapters
+            cursor = await db.execute(
+                "SELECT * FROM chapters WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+                (user_id,)
+            )
+            recent = await cursor.fetchall()
+            
+            # Task counts
+            cursor = await db.execute(
+                "SELECT COUNT(*) as count FROM tasks WHERE user_id = ? AND status = 'pending'",
+                (user_id,)
+            )
+            pending = (await cursor.fetchone())["count"]
+            
+            cursor = await db.execute(
+                "SELECT COUNT(*) as count FROM tasks WHERE user_id = ? AND status = 'submitted'",
+                (user_id,)
+            )
+            submitted = (await cursor.fetchone())["count"]
+            
+            # Get user for display name
+            cursor = await db.execute(
+                "SELECT display_name FROM users WHERE user_id = ?",
+                (user_id,)
+            )
+            user = await cursor.fetchone()
+            
+            return {
+                "total_earned": row["total"],
+                "chapters_count": row["count"],
+                "recent_chapters": [dict(r) for r in recent],
+                "pending_tasks": pending,
+                "submitted_tasks": submitted,
+                "display_name": user["display_name"] if user else None
+            }
     
     async def get_team_stats(self):
-        # Total chapters
-        total_chapters = await self.chapters.count_documents({})
-        
-        # Total earnings
-        pipeline = [{"$group": {"_id": None, "total": {"$sum": "$price"}}}]
-        result = await self.chapters.aggregate(pipeline).to_list(length=1)
-        total_earnings = result[0]["total"] if result else 0
-        
-        # Tasks stats
-        pending = await self.tasks.count_documents({"status": "pending"})
-        submitted = await self.tasks.count_documents({"status": "submitted"})
-        
-        # Top users
-        top_pipeline = [
-            {"$group": {
-                "_id": "$user_id",
-                "count": {"$sum": 1},
-                "total": {"$sum": "$price"}
-            }},
-            {"$sort": {"count": -1}},
-            {"$limit": 5}
-        ]
-        top_users = await self.chapters.aggregate(top_pipeline).to_list(length=5)
-        
-        # Get display names for top users
-        for user in top_users:
-            user_doc = await self.users.find_one({"user_id": user["_id"]})
-            user["display_name"] = user_doc.get("display_name") if user_doc else "Unknown"
-        
-        return {
-            "total_chapters": total_chapters,
-            "total_earnings": total_earnings,
-            "pending_tasks": pending,
-            "submitted_tasks": submitted,
-            "top_users": top_users
-        }
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            # Total chapters
+            cursor = await db.execute("SELECT COUNT(*) as count FROM chapters")
+            total_chapters = (await cursor.fetchone())["count"]
+            
+            # Total earnings
+            cursor = await db.execute("SELECT COALESCE(SUM(price), 0) as total FROM chapters")
+            total_earnings = (await cursor.fetchone())["total"]
+            
+            # Pending tasks
+            cursor = await db.execute("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending'")
+            pending = (await cursor.fetchone())["count"]
+            
+            cursor = await db.execute("SELECT COUNT(*) as count FROM tasks WHERE status = 'submitted'")
+            submitted = (await cursor.fetchone())["count"]
+            
+            # Top users
+            cursor = await db.execute('''
+                SELECT user_id, username, display_name, COUNT(*) as count, COALESCE(SUM(price), 0) as total
+                FROM chapters GROUP BY user_id ORDER BY count DESC LIMIT 5
+            ''')
+            top_users = await cursor.fetchall()
+            
+            return {
+                "total_chapters": total_chapters,
+                "total_earnings": total_earnings,
+                "pending_tasks": pending,
+                "submitted_tasks": submitted,
+                "top_users": [dict(u) for u in top_users]
+            }
     
     async def get_weekly_report(self):
         week_ago = datetime.now(pytz.UTC) - timedelta(days=7)
         
-        pipeline = [
-            {"$match": {"created_at": {"$gte": week_ago}}},
-            {"$group": {
-                "_id": "$user_id",
-                "chapters": {"$sum": 1},
-                "earnings": {"$sum": "$price"}
-            }},
-            {"$sort": {"chapters": -1}}
-        ]
-        
-        result = await self.chapters.aggregate(pipeline).to_list(length=20)
-        
-        # Get display names
-        for item in result:
-            user_doc = await self.users.find_one({"user_id": item["_id"]})
-            item["display_name"] = user_doc.get("display_name") if user_doc else "Unknown"
-        
-        return result
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            db.row_factory = aiosqlite.Row
+            
+            cursor = await db.execute('''
+                SELECT user_id, username, display_name, COUNT(*) as chapters, COALESCE(SUM(price), 0) as earnings
+                FROM chapters WHERE created_at >= ? GROUP BY user_id ORDER BY chapters DESC
+            ''', (week_ago,))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
     
-    # ========== Logging with Transaction for delete_all_logs ==========
+    # ========== Logging ==========
     async def log_action(self, action: str, user_id: int, target_id: str = None,
-                        details: dict = None, log_type: str = "normal", session=None):
-        log = {
-            "action": action,
-            "user_id": user_id,
-            "target_id": target_id,
-            "details": details or {},
-            "timestamp": datetime.now(pytz.UTC),
-            "type": log_type
-        }
-        
-        if session:
-            await self.logs.insert_one(log, session=session)
-        else:
-            await self.logs.insert_one(log)
+                        details: dict = None, log_type: str = "normal"):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
+            await db.execute(
+                '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (action, user_id, target_id, json.dumps(details or {}),
+                 datetime.now(pytz.UTC), log_type)
+            )
+            await db.commit()
     
     async def delete_all_logs(self, user_id: int):
-        """Only owner can delete logs - with transaction"""
-        async with await self.client.start_session() as session:
-            async with session.start_transaction():
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON;")
+            
+            # Start transaction
+            await db.execute("BEGIN")
+            
+            try:
+                # Log the action
+                await db.execute(
+                    '''INSERT INTO logs (action, user_id, timestamp, type)
+                       VALUES (?, ?, ?, ?)''',
+                    ("delete_all_logs", user_id, datetime.now(pytz.UTC), "admin")
+                )
                 
-                # Create log entry first
-                log_entry = {
-                    "action": "delete_all_logs",
-                    "user_id": user_id,
-                    "timestamp": datetime.now(pytz.UTC),
-                    "type": "admin"
-                }
+                # Delete non-financial logs
+                await db.execute("DELETE FROM logs WHERE type != 'financial'")
                 
-                # Insert it
-                result = await self.logs.insert_one(log_entry, session=session)
+                await db.commit()
                 
-                # Delete everything except this log and financial logs
-                await self.logs.delete_many({
-                    "_id": {"$ne": result.inserted_id},
-                    "type": {"$ne": "financial"}
-                }, session=session)
+            except Exception as e:
+                await db.execute("ROLLBACK")
+                logger.error(f"Error deleting logs: {e}")
 
 # Create global instance
 db = Database()
