@@ -14,11 +14,7 @@ class ManhwaBot(commands.Bot):
         intents.members = True
         intents.guilds = True
 
-        super().__init__(
-            command_prefix='!',
-            intents=intents,
-            help_command=None
-        )
+        super().__init__(command_prefix='!', intents=intents, help_command=None)
 
     async def setup_hook(self):
         await self.load_extension("cogs.works")
@@ -26,7 +22,6 @@ class ManhwaBot(commands.Bot):
         await self.load_extension("cogs.earnings")
         await self.load_extension("cogs.admin")
         await self.load_extension("cogs.owner")
-
         await self.tree.sync()
         logger.info("✅ Synced global commands")
 
@@ -39,10 +34,7 @@ async def on_ready():
         logger.info("👑 No owner set. Use /set_owner to set yourself as owner.")
     else:
         logger.info(f"👑 Owner ID: {config.OWNER_ID}")
-    await bot.change_presence(
-        activity=discord.Game(name="📚 إدارة فريق الترجمة"),
-        status=discord.Status.online
-    )
+    await bot.change_presence(activity=discord.Game(name="📚 إدارة فريق الترجمة"), status=discord.Status.online)
 
 @bot.command(name='ping')
 async def ping(ctx):
@@ -75,12 +67,8 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("❌ ليس لديك صلاحية", ephemeral=True)
     elif isinstance(error, app_commands.CommandOnCooldown):
-        await interaction.response.send_message(
-            f"⏳ انتظر {error.retry_after:.1f} ثانية",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"⏳ انتظر {error.retry_after:.1f} ثانية", ephemeral=True)
     elif isinstance(error, app_commands.CheckFailure):
-        # يتم التعامل معه داخل الدالة check
         pass
     else:
         logger.error(f"Unhandled app command error: {error}")
