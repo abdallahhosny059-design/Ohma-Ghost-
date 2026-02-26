@@ -113,6 +113,14 @@ class Database:
                 )
             ''')
 
+            # Settings table (لتخزين الإعدادات العامة مثل owner_id)
+            await self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            ''')
+
             # Indexes
             await self.conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_tasks_user_status 
@@ -212,6 +220,31 @@ class Database:
         cursor = await self.conn.execute("SELECT user_id, added_at FROM admins ORDER BY added_at")
         rows = await cursor.fetchall()
         return [{"user_id": row[0], "added_at": row[1]} for row in rows]
+
+    # ========== Owner Management ==========
+    async def set_owner(self, user_id: int) -> bool:
+        """تعيين الأونر (مرة واحدة فقط)"""
+        async with self.lock:
+            # التحقق مما إذا كان هناك أونر بالفعل
+            cursor = await self.conn.execute("SELECT value FROM settings WHERE key = 'owner_id'")
+            existing = await cursor.fetchone()
+            if existing:
+                return False  # الأونر موجود مسبقاً
+            # إدراج الأونر الجديد
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("owner_id", str(user_id))
+            )
+            await self.conn.commit()
+            return True
+
+    async def get_owner(self) -> int | None:
+        """جلب معرف الأونر من قاعدة البيانات"""
+        cursor = await self.conn.execute("SELECT value FROM settings WHERE key = 'owner_id'")
+        row = await cursor.fetchone()
+        if row:
+            return int(row[0])
+        return None
 
     # ========== Work Operations ==========
     async def add_work(self, name: str, link: str, added_by: int):
