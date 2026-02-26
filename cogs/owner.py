@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 def is_owner():
     async def predicate(interaction: discord.Interaction):
+        if config.OWNER_ID is None:
+            await interaction.response.send_message("⚠️ لا يوجد أونر محدد. استخدم /set_owner لتعيين نفسك.", ephemeral=True)
+            return False
         if interaction.user.id == config.OWNER_ID:
             return True
         await interaction.response.send_message("❌ هذا الأمر للأونر فقط", ephemeral=True)
@@ -19,6 +22,17 @@ class OwnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="set_owner", description="تعيين نفسك كأونر للبوت (لأول مرة)")
+    async def set_owner(self, interaction: discord.Interaction):
+        """يسمح لأول شخص يستخدم الأمر بأن يصبح الأونر"""
+        if config.OWNER_ID is not None:
+            await interaction.response.send_message("❌ الأونر محدد مسبقاً.", ephemeral=True)
+            return
+        
+        config.OWNER_ID = interaction.user.id
+        await interaction.response.send_message(f"✅ تم تعيينك كأونر للبوت! (ID: {config.OWNER_ID})", ephemeral=True)
+        logger.info(f"👑 Owner set to {interaction.user.name} (ID: {config.OWNER_ID}) via command.")
+
     @app_commands.command(name="حذف_السجلات", description="حذف جميع السجلات (الأونر فقط)")
     @is_owner()
     async def delete_logs(self, interaction: discord.Interaction):
@@ -28,7 +42,6 @@ class OwnerCog(commands.Cog):
 
     @app_commands.command(name="حالة_البوت", description="عرض حالة البوت (الأونر فقط)")
     @is_owner()
-    # ✅ تغيير اسم الدالة من bot_status إلى status_command (لا يبدأ بـ bot_)
     async def status_command(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
@@ -36,7 +49,7 @@ class OwnerCog(commands.Cog):
         embed.add_field(name="⏰ وقت التشغيل", value="شغال", inline=True)
         embed.add_field(name="👤 الأونر", value=f"<@{config.OWNER_ID}>" if config.OWNER_ID else "لم يحدد", inline=True)
 
-        # استخدام استعلامات SQLite الصحيحة
+        # إحصائيات SQLite
         try:
             async with db.conn.execute("SELECT COUNT(*) FROM users") as cursor:
                 users_count = (await cursor.fetchone())[0]
