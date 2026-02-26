@@ -9,8 +9,8 @@ class Config:
         raise ValueError("❌ DISCORD_TOKEN غير موجود في ملف .env")
 
     # إعدادات البوت
-    COMMAND_COOLDOWN = 3
-    ADMIN_COOLDOWN = 2
-    MAX_PRICE = 10000
+    COMMAND_COOLDOWN = 3          # ثواني بين الأوامر العادية
+    ADMIN_COOLDOWN = 2            # ثواني بين أوامر الأدمن
+    MAX_PRICE = 10000             # أقصى سعر للفصل
 
 config = Config()
