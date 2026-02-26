@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self):
         self.db_path = "bot_database.db"
-        self.conn = None
-        self.data_lock = asyncio.Lock()  # لعمليات البيانات
-        self.log_lock = asyncio.Lock()    # لعمليات التسجيل (منفصل)
+        self.data_conn = None
+        self.log_conn = None
+        self.data_lock = asyncio.Lock()
+        self.log_lock = asyncio.Lock()
         self.initialized = False
 
     async def initialize(self):
@@ -20,19 +21,25 @@ class Database:
             return
 
         try:
-            self.conn = await aiosqlite.connect(self.db_path)
+            # اتصال البيانات (للمعاملات الحساسة)
+            self.data_conn = await aiosqlite.connect(self.db_path)
+            await self.data_conn.execute("PRAGMA foreign_keys = ON;")
+            await self.data_conn.execute("PRAGMA journal_mode = WAL;")
+            await self.data_conn.execute("PRAGMA busy_timeout = 5000;")
+            await self.data_conn.execute("PRAGMA synchronous = NORMAL;")
+            await self.data_conn.execute("PRAGMA cache_size = -2000;")
+            await self.data_conn.execute("PRAGMA temp_store = MEMORY;")
+            self.data_conn.row_factory = aiosqlite.Row
 
-            # Optimize SQLite
-            await self.conn.execute("PRAGMA foreign_keys = ON;")
-            await self.conn.execute("PRAGMA journal_mode = WAL;")
-            await self.conn.execute("PRAGMA busy_timeout = 5000;")
-            await self.conn.execute("PRAGMA synchronous = NORMAL;")
-            await self.conn.execute("PRAGMA cache_size = -2000;")
-            await self.conn.execute("PRAGMA temp_store = MEMORY;")
-            self.conn.row_factory = aiosqlite.Row
+            # اتصال السجلات العامة (منفصل)
+            self.log_conn = await aiosqlite.connect(self.db_path)
+            await self.log_conn.execute("PRAGMA journal_mode = WAL;")
+            await self.log_conn.execute("PRAGMA busy_timeout = 5000;")
+            await self.log_conn.execute("PRAGMA synchronous = NORMAL;")
+            self.log_conn.row_factory = aiosqlite.Row
 
-            # Create tables
-            await self.conn.execute('''
+            # إنشاء الجداول (مرة واحدة)
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
                     username TEXT NOT NULL,
@@ -41,139 +48,172 @@ class Database:
                     is_banned INTEGER DEFAULT 0
                 )
             ''')
-
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS works (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
                     link TEXT NOT NULL,
-                    added_by INTEGER NOT NULL,
+                    added_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     is_active INTEGER DEFAULT 1
                 )
             ''')
-
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS tasks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     username TEXT NOT NULL,
                     display_name TEXT,
-                    work TEXT NOT NULL,
+                    work_id INTEGER NOT NULL,
                     chapter INTEGER NOT NULL,
                     price INTEGER NOT NULL,
                     status TEXT NOT NULL,
-                    assigned_by INTEGER NOT NULL,
+                    assigned_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     submitted_at TEXT,
                     approved_at TEXT,
                     rejected_at TEXT,
-                    approved_by INTEGER,
-                    rejected_by INTEGER,
+                    approved_by TEXT,
+                    rejected_by TEXT,
                     reject_reason TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE RESTRICT,
-                    FOREIGN KEY (work) REFERENCES works (name) ON DELETE RESTRICT
+                    FOREIGN KEY (work_id) REFERENCES works (id) ON DELETE RESTRICT
                 )
             ''')
-
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS chapters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     username TEXT NOT NULL,
                     display_name TEXT,
-                    work TEXT NOT NULL,
+                    work_id INTEGER NOT NULL,
                     chapter INTEGER NOT NULL,
                     price INTEGER NOT NULL,
-                    approved_by INTEGER NOT NULL,
+                    approved_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE RESTRICT,
-                    FOREIGN KEY (work) REFERENCES works (name) ON DELETE RESTRICT,
-                    UNIQUE(user_id, work, chapter)
+                    FOREIGN KEY (work_id) REFERENCES works (id) ON DELETE RESTRICT,
+                    UNIQUE(user_id, work_id, chapter)
                 )
             ''')
-
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
+                    user_id TEXT NOT NULL,
                     target_id TEXT,
                     details TEXT,
                     timestamp TEXT NOT NULL,
                     type TEXT DEFAULT 'normal'
                 )
             ''')
-
-            # Admin table
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE TABLE IF NOT EXISTS admins (
                     user_id TEXT PRIMARY KEY,
-                    added_by INTEGER NOT NULL,
+                    added_by TEXT NOT NULL,
                     added_at TEXT NOT NULL
                 )
             ''')
 
-            # Indexes
-            await self.conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_tasks_user_status 
-                ON tasks(user_id, status)
+            # الفهارس
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status)
             ''')
-            await self.conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_tasks_work_chapter 
-                ON tasks(work, chapter)
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_tasks_work_id ON tasks(work_id)
             ''')
-            await self.conn.execute('''
+            await self.data_conn.execute('''
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_unique_pending 
-                ON tasks(user_id, work, chapter) 
-                WHERE status IN ('pending', 'submitted')
+                ON tasks(user_id, work_id, chapter) WHERE status IN ('pending', 'submitted')
             ''')
-            await self.conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_chapters_user_date 
-                ON chapters(user_id, created_at DESC)
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_chapters_user_date ON chapters(user_id, created_at DESC)
             ''')
-            await self.conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_logs_timestamp 
-                ON logs(timestamp)
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_chapters_work_id ON chapters(work_id)
             ''')
-            await self.conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_logs_type 
-                ON logs(type)
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)
+            ''')
+            await self.data_conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_logs_type ON logs(type)
             ''')
 
-            await self.conn.commit()
+            await self.data_conn.commit()
             self.initialized = True
-            logger.info("✅ SQLite database connected and optimized with single connection")
+            logger.info("✅ Database ready with separate connections and indexes")
 
         except Exception as e:
-            logger.error(f"❌ Database error: {e}")
-            if self.conn:
-                await self.conn.close()
+            logger.error(f"❌ Database init error: {e}")
+            if self.data_conn:
+                await self.data_conn.close()
+            if self.log_conn:
+                await self.log_conn.close()
             raise
 
     async def close(self):
-        if self.conn:
-            await self.conn.close()
-            self.conn = None
-            self.initialized = False
+        if self.data_conn:
+            await self.data_conn.close()
+        if self.log_conn:
+            await self.log_conn.close()
+        self.initialized = False
 
     def _now(self):
         return datetime.utcnow().isoformat()
 
-    # ========== User Operations ==========
+    # ================== دوال داخلية بدون lock (للاستخدام داخل data_lock) ==================
+    async def _get_work_by_id(self, work_id: int):
+        cursor = await self.data_conn.execute(
+            "SELECT * FROM works WHERE id = ? AND is_active = 1", (work_id,)
+        )
+        return await cursor.fetchone()
+
+    async def _get_user(self, user_id: str):
+        cursor = await self.data_conn.execute(
+            "SELECT * FROM users WHERE user_id = ?", (user_id,)
+        )
+        return await cursor.fetchone()
+
+    async def _create_user(self, user_id: str, username: str, display_name: str):
+        await self.data_conn.execute(
+            '''INSERT INTO users (user_id, username, display_name, joined_at, is_banned)
+               VALUES (?, ?, ?, ?, ?)''',
+            (user_id, username, display_name, self._now(), 0)
+        )
+
+    async def _update_user_display_name(self, user_id: str, display_name: str):
+        await self.data_conn.execute(
+            "UPDATE users SET display_name = ? WHERE user_id = ?",
+            (display_name, user_id)
+        )
+
+    # ================== التسجيل العام (خارج المعاملات) ==================
+    async def log_action(self, action: str, user_id: str, target_id: str = None,
+                         details: dict = None, log_type: str = "normal", max_retries=3):
+        """تسجيل حدث غير مالي على اتصال السجلات مع إعادة محاولة تلقائية"""
+        for attempt in range(max_retries):
+            try:
+                async with self.log_lock:
+                    await self.log_conn.execute(
+                        '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
+                           VALUES (?, ?, ?, ?, ?, ?)''',
+                        (action, user_id, target_id, json.dumps(details or {}), self._now(), log_type)
+                    )
+                    await self.log_conn.commit()
+                return
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to log action after {max_retries} attempts: {e}")
+                else:
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+
+    # ================== المستخدمون ==================
     async def get_or_create_user(self, user_id: str, username: str, display_name: str = None):
         async with self.data_lock:
-            cursor = await self.conn.execute(
-                "SELECT * FROM users WHERE user_id = ?", (user_id,)
-            )
-            user = await cursor.fetchone()
+            user = await self._get_user(user_id)
             if not user:
-                await self.conn.execute(
-                    '''INSERT INTO users (user_id, username, display_name, joined_at, is_banned)
-                       VALUES (?, ?, ?, ?, ?)''',
-                    (user_id, username, display_name or username, self._now(), 0)
-                )
-                await self.conn.commit()
+                await self._create_user(user_id, username, display_name or username)
+                await self.data_conn.commit()
                 return {
                     "user_id": user_id,
                     "username": username,
@@ -182,339 +222,404 @@ class Database:
                     "is_banned": False
                 }
             if display_name and user["display_name"] != display_name:
-                await self.conn.execute(
-                    "UPDATE users SET display_name = ? WHERE user_id = ?",
-                    (display_name, user_id)
-                )
-                await self.conn.commit()
+                await self._update_user_display_name(user_id, display_name)
+                await self.data_conn.commit()
             return dict(user)
 
-    # ========== Admin Management ==========
-    async def add_admin(self, user_id: str, added_by: int) -> bool:
+    # نسخة داخلية للاستخدام داخل data_lock (بدون قفل إضافي)
+    async def _get_or_create_user(self, user_id: str, username: str, display_name: str = None):
+        """يجب استدعاؤها فقط داخل data_lock"""
+        user = await self._get_user(user_id)
+        if not user:
+            await self._create_user(user_id, username, display_name or username)
+            await self.data_conn.commit()
+            return {
+                "user_id": user_id,
+                "username": username,
+                "display_name": display_name or username,
+                "joined_at": self._now(),
+                "is_banned": False
+            }
+        if display_name and user["display_name"] != display_name:
+            await self._update_user_display_name(user_id, display_name)
+            await self.data_conn.commit()
+        return dict(user)
+
+    # ================== إدارة الأدمن ==================
+    async def add_admin(self, user_id: str, added_by: str) -> bool:
         async with self.data_lock:
-            cursor = await self.conn.execute(
+            cursor = await self.data_conn.execute(
                 "INSERT OR IGNORE INTO admins (user_id, added_by, added_at) VALUES (?, ?, ?)",
                 (user_id, added_by, self._now())
             )
-            await self.conn.commit()
-            if cursor.rowcount > 0:
-                await self._log_action("add_admin", added_by, details={"target_id": user_id})
-                return True
-            return False
+            await self.data_conn.commit()
+            success = cursor.rowcount > 0
+        if success:
+            # تسجيل خارج القفل لتجنب deadlock
+            asyncio.create_task(self.log_action("add_admin", added_by, details={"target_id": user_id}))
+        return success
 
-    async def remove_admin(self, user_id: str) -> bool:
+    async def remove_admin(self, user_id: str, removed_by: str) -> bool:
         async with self.data_lock:
-            cursor = await self.conn.execute(
-                "DELETE FROM admins WHERE user_id = ?",
-                (user_id,)
+            cursor = await self.data_conn.execute(
+                "DELETE FROM admins WHERE user_id = ?", (user_id,)
             )
-            await self.conn.commit()
-            if cursor.rowcount > 0:
-                await self._log_action("remove_admin", user_id, details={"target_id": user_id})
-                return True
-            return False
+            await self.data_conn.commit()
+            success = cursor.rowcount > 0
+        if success:
+            asyncio.create_task(self.log_action("remove_admin", removed_by, details={"target_id": user_id}))
+        return success
 
     async def is_admin(self, user_id: str) -> bool:
-        cursor = await self.conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone() is not None
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
+                "SELECT 1 FROM admins WHERE user_id = ?", (user_id,)
+            )
+            return await cursor.fetchone() is not None
 
     async def get_admins(self):
-        cursor = await self.conn.execute("SELECT user_id, added_at FROM admins ORDER BY added_at")
-        rows = await cursor.fetchall()
-        return [{"user_id": row[0], "added_at": row[1]} for row in rows]
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
+                "SELECT user_id, added_at FROM admins ORDER BY added_at"
+            )
+            rows = await cursor.fetchall()
+            return [{"user_id": row[0], "added_at": row[1]} for row in rows]
 
-    # ========== Work Operations ==========
-    async def add_work(self, name: str, link: str, added_by: int):
+    # ================== الأعمال ==================
+    async def add_work(self, name: str, link: str, added_by: str):
         try:
             async with self.data_lock:
-                await self.conn.execute(
+                await self.data_conn.execute(
                     '''INSERT INTO works (name, link, added_by, created_at, is_active)
                        VALUES (?, ?, ?, ?, ?)''',
                     (name, link, added_by, self._now(), 1)
                 )
-                await self.conn.commit()
-                await self._log_action("add_work", added_by, details={"name": name, "link": link})
-                return True, "✅ تمت الإضافة"
+                await self.data_conn.commit()
+            asyncio.create_task(self.log_action("add_work", added_by, details={"name": name, "link": link}))
+            return True, "✅ تمت الإضافة"
         except Exception:
             return False, "❌ العمل موجود مسبقاً"
 
-    async def get_work(self, name: str):
-        cursor = await self.conn.execute(
-            "SELECT * FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1", (name,)
-        )
-        return await cursor.fetchone()
+    async def get_work_by_name(self, name: str):
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
+                "SELECT * FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+                (name,)
+            )
+            return await cursor.fetchone()
+
+    async def get_work_by_id(self, work_id: int):
+        async with self.data_lock:
+            return await self._get_work_by_id(work_id)
 
     async def search_works(self, query: str):
-        cursor = await self.conn.execute(
-            "SELECT * FROM works WHERE LOWER(name) LIKE LOWER(?) AND is_active = 1 LIMIT 10",
-            (f"%{query}%",)
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
-    async def delete_work(self, name: str, deleted_by: int):
         async with self.data_lock:
-            cursor = await self.conn.execute(
+            cursor = await self.data_conn.execute(
+                "SELECT * FROM works WHERE LOWER(name) LIKE LOWER(?) AND is_active = 1 LIMIT 10",
+                (f"%{query}%",)
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def delete_work(self, name: str, deleted_by: str):
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
                 "UPDATE works SET is_active = 0 WHERE LOWER(name) = LOWER(?) AND is_active = 1",
                 (name,)
             )
-            await self.conn.commit()
-            if cursor.rowcount > 0:
-                await self._log_action("delete_work", deleted_by, details={"name": name})
-                return True
-            return False
+            await self.data_conn.commit()
+            success = cursor.rowcount > 0
+        if success:
+            asyncio.create_task(self.log_action("delete_work", deleted_by, details={"name": name}))
+        return success
 
-    # ========== Task Operations ==========
+    # ================== المهام ==================
     async def create_task(self, user_id: str, username: str, display_name: str,
-                          work: str, chapter: int, price: int, assigned_by: int):
+                          work_name: str, chapter: int, price: int, assigned_by: str):
         if price <= 0 or price > 10000:
             return False, "❌ السعر يجب أن يكون بين 1 و 10000"
         if chapter <= 0:
             return False, "❌ رقم الفصل غير صالح"
 
-        work_doc = await self.get_work(work)
-        if not work_doc:
-            return False, "❌ العمل غير موجود"
-
-        await self.get_or_create_user(user_id, username, display_name)
-
         async with self.data_lock:
+            # جلب العمل
+            work = await self.data_conn.execute(
+                "SELECT id FROM works WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+                (work_name,)
+            )
+            work_row = await work.fetchone()
+            if not work_row:
+                return False, "❌ العمل غير موجود"
+            work_id = work_row["id"]
+
+            # إنشاء/تحديث المستخدم (باستخدام النسخة الداخلية)
+            await self._get_or_create_user(user_id, username, display_name)
+
             try:
-                cursor = await self.conn.execute(
+                cursor = await self.data_conn.execute(
                     '''INSERT OR IGNORE INTO tasks
-                       (user_id, username, display_name, work, chapter, price,
+                       (user_id, username, display_name, work_id, chapter, price,
                         status, assigned_by, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (user_id, username, display_name, work_doc["name"], chapter, price,
+                    (user_id, username, display_name, work_id, chapter, price,
                      "pending", assigned_by, self._now())
                 )
-                await self.conn.commit()
+                await self.data_conn.commit()
                 if cursor.rowcount > 0:
-                    await self._log_action(
+                    asyncio.create_task(self.log_action(
                         "create_task", assigned_by, target_id=user_id,
-                        details={"work": work_doc["name"], "chapter": chapter, "price": price}
-                    )
+                        details={"work_id": work_id, "chapter": chapter, "price": price}
+                    ))
                     return True, "✅ تم التكليف"
                 else:
                     return False, "❌ هذا الفصل مكلف بالفعل"
             except Exception as e:
+                await self.data_conn.rollback()
                 logger.error(f"Error creating task: {e}")
                 return False, "❌ حدث خطأ"
 
     async def get_user_tasks(self, user_id: str, status: str = None):
-        if status:
-            cursor = await self.conn.execute(
-                "SELECT * FROM tasks WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
-                (user_id, status)
-            )
-        else:
-            cursor = await self.conn.execute(
-                "SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
-            )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
-    async def submit_task(self, user_id: str, work: str, chapter: int):
         async with self.data_lock:
-            cursor = await self.conn.execute(
+            if status:
+                cursor = await self.data_conn.execute(
+                    "SELECT * FROM tasks WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
+                    (user_id, status)
+                )
+            else:
+                cursor = await self.data_conn.execute(
+                    "SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
+                )
+            rows = await cursor.fetchall()
+            tasks = []
+            for row in rows:
+                task = dict(row)
+                work = await self._get_work_by_id(task["work_id"])
+                task["work_name"] = work["name"] if work else "غير معروف"
+                tasks.append(task)
+            return tasks
+
+    async def submit_task(self, user_id: str, work_id: int, chapter: int):
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
                 """
                 UPDATE tasks
                 SET status = ?, submitted_at = ?
-                WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'
+                WHERE user_id = ? AND work_id = ? AND chapter = ? AND status = 'pending'
                 """,
-                ("submitted", self._now(), user_id, work, chapter)
+                ("submitted", self._now(), user_id, work_id, chapter)
             )
-            await self.conn.commit()
+            await self.data_conn.commit()
             success = cursor.rowcount > 0
-            await self._log_action(
-                "submit_task", int(user_id),
-                details={"work": work, "chapter": chapter, "success": success}
-            )
-            return success
+        if success:
+            asyncio.create_task(self.log_action(
+                "submit_task", user_id,
+                details={"work_id": work_id, "chapter": chapter, "success": success}
+            ))
+        return success
 
-    async def approve_task(self, user_id: str, work: str, chapter: int, approved_by: int):
-        async with self.data_lock:
+    async def approve_task(self, user_id: str, work_id: int, chapter: int, approved_by: str, max_retries=3):
+        for attempt in range(max_retries):
             try:
-                await self.conn.execute("BEGIN IMMEDIATE")
+                async with self.data_lock:
+                    await self.data_conn.execute("BEGIN IMMEDIATE")
 
-                cursor = await self.conn.execute(
-                    """
-                    SELECT * FROM tasks
-                    WHERE user_id = ? AND work = ? AND chapter = ?
-                      AND status = 'submitted' AND approved_at IS NULL
-                    """,
-                    (user_id, work, chapter)
-                )
-                task = await cursor.fetchone()
-                if not task:
-                    await self.conn.execute("ROLLBACK")
-                    return None
-
-                await self.conn.execute(
-                    """
-                    UPDATE tasks
-                    SET status = 'approved', approved_by = ?, approved_at = ?
-                    WHERE id = ?
-                    """,
-                    (approved_by, self._now(), task["id"])
-                )
-
-                try:
-                    await self.conn.execute(
+                    # جلب المهمة
+                    cursor = await self.data_conn.execute(
                         """
-                        INSERT INTO chapters
-                        (user_id, username, display_name, work, chapter, price, approved_by, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        SELECT * FROM tasks
+                        WHERE user_id = ? AND work_id = ? AND chapter = ?
+                          AND status = 'submitted' AND approved_at IS NULL
                         """,
-                        (user_id, task["username"], task["display_name"], work, chapter,
-                         task["price"], approved_by, self._now())
+                        (user_id, work_id, chapter)
                     )
-                except Exception:
-                    await self.conn.execute("ROLLBACK")
+                    task_row = await cursor.fetchone()
+                    if not task_row:
+                        await self.data_conn.execute("ROLLBACK")
+                        logger.warning(f"Approve task failed: no submitted task")
+                        return None
+
+                    task = dict(task_row)
+
+                    if task["price"] is None or task["price"] <= 0:
+                        logger.error(f"Task {task['id']} invalid price")
+                        await self.data_conn.execute("ROLLBACK")
+                        return None
+
+                    # تحديث المهمة مع التحقق من الحالة
+                    cursor2 = await self.data_conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'approved', approved_by = ?, approved_at = ?
+                        WHERE id = ? AND status = 'submitted'
+                        """,
+                        (approved_by, self._now(), task["id"])
+                    )
+                    if cursor2.rowcount == 0:
+                        await self.data_conn.execute("ROLLBACK")
+                        logger.warning("Approve task race: status changed")
+                        return None
+
+                    # إدراج الفصل
+                    try:
+                        await self.data_conn.execute(
+                            """
+                            INSERT INTO chapters
+                            (user_id, username, display_name, work_id, chapter, price, approved_by, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (user_id, task["username"], task["display_name"], work_id, chapter,
+                             task["price"], approved_by, self._now())
+                        )
+                    except Exception as e:
+                        await self.data_conn.execute("ROLLBACK")
+                        logger.error(f"Failed to insert chapter: {e}")
+                        return None
+
+                    # تسجيل مالي داخل المعاملة (على data_conn)
+                    await self.data_conn.execute(
+                        '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
+                           VALUES (?, ?, ?, ?, ?, ?)''',
+                        ("financial_approve", approved_by, user_id,
+                         json.dumps({"work_id": work_id, "chapter": chapter, "price": task["price"]}),
+                         self._now(), "financial")
+                    )
+
+                    await self.data_conn.commit()
+                    logger.info(f"Approved task {user_id} {work_id} {chapter} with price {task['price']}")
+                    return task
+
+            except aiosqlite.OperationalError as e:
+                if "locked" in str(e) and attempt < max_retries - 1:
+                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    continue
+                else:
+                    await self.data_conn.execute("ROLLBACK")
+                    logger.error(f"Approve task error after {attempt+1} attempts: {e}")
                     return None
-
-                await self.conn.commit()
-
-                await self._log_action(
-                    "financial_approve", approved_by, target_id=user_id,
-                    details={"work": work, "chapter": chapter, "price": task["price"]},
-                    log_type="financial"
-                )
-                return dict(task)
-
             except Exception as e:
-                await self.conn.execute("ROLLBACK")
-                logger.error(f"Error in approve_task: {e}")
+                await self.data_conn.execute("ROLLBACK")
+                logger.error(f"Approve task error: {e}")
                 return None
+        return None
 
-    async def reject_task(self, user_id: str, work: str, chapter: int,
-                          rejected_by: int, reason: str):
+    async def reject_task(self, user_id: str, work_id: int, chapter: int,
+                          rejected_by: str, reason: str):
         async with self.data_lock:
-            cursor = await self.conn.execute(
+            cursor = await self.data_conn.execute(
                 """
                 UPDATE tasks
                 SET status = 'rejected', rejected_by = ?,
                     rejected_at = ?, reject_reason = ?
-                WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'submitted'
+                WHERE user_id = ? AND work_id = ? AND chapter = ? AND status = 'submitted'
                 """,
-                (rejected_by, self._now(), reason, user_id, work, chapter)
+                (rejected_by, self._now(), reason, user_id, work_id, chapter)
             )
-            await self.conn.commit()
-            if cursor.rowcount > 0:
-                await self._log_action(
-                    "reject_task", rejected_by, target_id=user_id,
-                    details={"work": work, "chapter": chapter, "reason": reason}
-                )
-                return True
-            return False
+            await self.data_conn.commit()
+            success = cursor.rowcount > 0
+        if success:
+            asyncio.create_task(self.log_action(
+                "reject_task", rejected_by, target_id=user_id,
+                details={"work_id": work_id, "chapter": chapter, "reason": reason}
+            ))
+        return success
 
-    # ========== Stats Operations ==========
+    # ================== الإحصائيات ==================
     async def get_user_stats(self, user_id: str):
-        cursor = await self.conn.execute(
-            "SELECT COALESCE(SUM(price), 0) as total, COUNT(*) as count FROM chapters WHERE user_id = ?",
-            (user_id,)
-        )
-        row = await cursor.fetchone()
-        total_earned = row["total"]
-        chapters_count = row["count"]
+        async with self.data_lock:
+            cursor = await self.data_conn.execute(
+                "SELECT COALESCE(SUM(price), 0) as total, COUNT(*) as count FROM chapters WHERE user_id = ?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            total_earned = row["total"]
+            chapters_count = row["count"]
 
-        cursor = await self.conn.execute(
-            "SELECT * FROM chapters WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
-            (user_id,)
-        )
-        recent = await cursor.fetchall()
+            cursor = await self.data_conn.execute(
+                "SELECT * FROM chapters WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+                (user_id,)
+            )
+            recent_rows = await cursor.fetchall()
+            recent_list = []
+            for ch in recent_rows:
+                ch_dict = dict(ch)
+                work = await self._get_work_by_id(ch_dict["work_id"])
+                ch_dict["work_name"] = work["name"] if work else "غير معروف"
+                recent_list.append(ch_dict)
 
-        cursor = await self.conn.execute(
-            "SELECT COUNT(*) as count FROM tasks WHERE user_id = ? AND status = 'pending'",
-            (user_id,)
-        )
-        pending = (await cursor.fetchone())["count"]
+            cursor = await self.data_conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'pending'",
+                (user_id,)
+            )
+            pending = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute(
-            "SELECT COUNT(*) as count FROM tasks WHERE user_id = ? AND status = 'submitted'",
-            (user_id,)
-        )
-        submitted = (await cursor.fetchone())["count"]
+            cursor = await self.data_conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'submitted'",
+                (user_id,)
+            )
+            submitted = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute(
-            "SELECT display_name FROM users WHERE user_id = ?", (user_id,)
-        )
-        user = await cursor.fetchone()
+            user = await self._get_user(user_id)
+            display_name = user["display_name"] if user else None
 
-        return {
-            "total_earned": total_earned,
-            "chapters_count": chapters_count,
-            "recent_chapters": [dict(r) for r in recent],
-            "pending_tasks": pending,
-            "submitted_tasks": submitted,
-            "display_name": user["display_name"] if user else None
-        }
+            return {
+                "total_earned": total_earned,
+                "chapters_count": chapters_count,
+                "recent_chapters": recent_list,
+                "pending_tasks": pending,
+                "submitted_tasks": submitted,
+                "display_name": display_name
+            }
 
     async def get_team_stats(self):
-        cursor = await self.conn.execute("SELECT COUNT(*) as count FROM chapters")
-        total_chapters = (await cursor.fetchone())["count"]
+        async with self.data_lock:
+            cursor = await self.data_conn.execute("SELECT COUNT(*) FROM chapters")
+            total_chapters = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute("SELECT COALESCE(SUM(price), 0) as total FROM chapters")
-        total_earnings = (await cursor.fetchone())["total"]
+            cursor = await self.data_conn.execute("SELECT COALESCE(SUM(price), 0) FROM chapters")
+            total_earnings = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending'")
-        pending = (await cursor.fetchone())["count"]
+            cursor = await self.data_conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'pending'")
+            pending = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute("SELECT COUNT(*) as count FROM tasks WHERE status = 'submitted'")
-        submitted = (await cursor.fetchone())["count"]
+            cursor = await self.data_conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'submitted'")
+            submitted = (await cursor.fetchone())[0]
 
-        cursor = await self.conn.execute('''
-            SELECT user_id, username, display_name, COUNT(*) as count, COALESCE(SUM(price), 0) as total
-            FROM chapters GROUP BY user_id ORDER BY count DESC LIMIT 5
-        ''')
-        top_users = await cursor.fetchall()
-
-        return {
-            "total_chapters": total_chapters,
-            "total_earnings": total_earnings,
-            "pending_tasks": pending,
-            "submitted_tasks": submitted,
-            "top_users": [dict(u) for u in top_users]
-        }
+            cursor = await self.data_conn.execute('''
+                SELECT user_id, username, display_name, COUNT(*) as count, COALESCE(SUM(price), 0) as total
+                FROM chapters GROUP BY user_id ORDER BY count DESC LIMIT 5
+            ''')
+            rows = await cursor.fetchall()
+            top_users = [dict(r) for r in rows]
+            return {
+                "total_chapters": total_chapters,
+                "total_earnings": total_earnings,
+                "pending_tasks": pending,
+                "submitted_tasks": submitted,
+                "top_users": top_users
+            }
 
     async def get_weekly_report(self):
         week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-        cursor = await self.conn.execute('''
-            SELECT user_id, username, display_name, COUNT(*) as chapters, COALESCE(SUM(price), 0) as earnings
-            FROM chapters WHERE created_at >= ? GROUP BY user_id ORDER BY chapters DESC
-        ''', (week_ago,))
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        async with self.data_lock:
+            cursor = await self.data_conn.execute('''
+                SELECT user_id, username, display_name, COUNT(*) as chapters, COALESCE(SUM(price), 0) as earnings
+                FROM chapters WHERE created_at >= ? GROUP BY user_id ORDER BY chapters DESC
+            ''', (week_ago,))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
-    # ========== Logging (بدون Lock لأن INSERT ذري) ==========
-    async def _log_action(self, action: str, user_id: int, target_id: str = None,
-                         details: dict = None, log_type: str = "normal"):
-        # هذه الدالة لا تمسك أي lock عمداً
-        await self.conn.execute(
-            '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
-               VALUES (?, ?, ?, ?, ?, ?)''',
-            (action, user_id, target_id, json.dumps(details or {}), self._now(), log_type)
-        )
-        await self.conn.commit()
-
-    async def log_action(self, action: str, user_id: int, target_id: str = None,
-                         details: dict = None, log_type: str = "normal"):
-        # واجهة عامة تستخدم الدالة الداخلية (للتوافق)
-        await self._log_action(action, user_id, target_id, details, log_type)
-
-    async def delete_all_logs(self, user_id: int):
+    # ================== إدارة السجلات ==================
+    async def delete_all_logs(self, user_id: str):
         async with self.data_lock:
             try:
-                await self.conn.execute("BEGIN IMMEDIATE")
-
-                await self._log_action("delete_all_logs", user_id, log_type="admin")
-
-                await self.conn.execute("DELETE FROM logs WHERE type != 'financial'")
-                await self.conn.commit()
-
+                await self.data_conn.execute("BEGIN IMMEDIATE")
+                await self.data_conn.execute("DELETE FROM logs WHERE type != 'financial'")
+                await self.data_conn.commit()
             except Exception as e:
-                await self.conn.execute("ROLLBACK")
+                await self.data_conn.execute("ROLLBACK")
                 logger.error(f"Error deleting logs: {e}")
+                return
+        asyncio.create_task(self.log_action("delete_all_logs", user_id, log_type="admin"))
 
-# Create global instance
+# إنشاء النسخة العامة
 db = Database()
