@@ -35,11 +35,10 @@ bot = ManhwaBot()
 @bot.event
 async def on_ready():
     logger.info(f'✅ Bot online as {bot.user}')
-    owner_id = await db.get_owner()
-    if owner_id:
-        logger.info(f"👑 Owner is set (ID: {owner_id})")
-    else:
+    if config.OWNER_ID is None:
         logger.info("👑 No owner set. Use /set_owner to set yourself as owner.")
+    else:
+        logger.info(f"👑 Owner ID: {config.OWNER_ID}")
     await bot.change_presence(
         activity=discord.Game(name="📚 إدارة فريق الترجمة"),
         status=discord.Status.online
