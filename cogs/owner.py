@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 from database import db
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -10,11 +11,23 @@ def is_owner():
     async def predicate(interaction: discord.Interaction):
         owner_id = await db.get_owner()
         if owner_id is None:
-            await interaction.response.send_message("⚠️ لم يتم تعيين الأونر بعد. استخدم /set_owner لتعيينه.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "⚠️ لم يتم تعيين الأونر بعد. استخدم /set_owner لتعيينه.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "⚠️ لم يتم تعيين الأونر بعد. استخدم /set_owner لتعيينه.",
+                    ephemeral=True
+                )
             return False
         if interaction.user.id == owner_id:
             return True
-        await interaction.response.send_message("❌ هذا الأمر للأونر فقط", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ هذا الأمر للأونر فقط", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ هذا الأمر للأونر فقط", ephemeral=True)
         return False
     return app_commands.check(predicate)
 
@@ -24,7 +37,6 @@ class OwnerCog(commands.Cog):
 
     @app_commands.command(name="set_owner", description="تعيين نفسك كأونر للبوت (مرة واحدة فقط)")
     async def set_owner(self, interaction: discord.Interaction):
-        # تحقق مما إذا كان الأونر موجوداً بالفعل
         existing_owner = await db.get_owner()
         if existing_owner is not None:
             await interaction.response.send_message("❌ الأونر محدد مسبقاً ولا يمكن تغييره.", ephemeral=True)
@@ -32,7 +44,10 @@ class OwnerCog(commands.Cog):
 
         success = await db.set_owner(interaction.user.id)
         if success:
-            await interaction.response.send_message(f"✅ تم تعيينك كأونر للبوت! (ID: {interaction.user.id})", ephemeral=True)
+            await interaction.response.send_message(
+                f"✅ تم تعيينك كأونر للبوت! (ID: {interaction.user.id})",
+                ephemeral=True
+            )
             logger.info(f"👑 Owner set to {interaction.user.name} (ID: {interaction.user.id}) via command.")
         else:
             await interaction.response.send_message("❌ حدث خطأ أثناء تعيين الأونر.", ephemeral=True)
