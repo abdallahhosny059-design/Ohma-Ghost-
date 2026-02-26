@@ -11,7 +11,8 @@ class Database:
     def __init__(self):
         self.db_path = "bot_database.db"
         self.conn = None
-        self.lock = asyncio.Lock()
+        self.data_lock = asyncio.Lock()  # لعمليات البيانات
+        self.log_lock = asyncio.Lock()    # لعمليات التسجيل (منفصل)
         self.initialized = False
 
     async def initialize(self):
@@ -161,7 +162,7 @@ class Database:
 
     # ========== User Operations ==========
     async def get_or_create_user(self, user_id: str, username: str, display_name: str = None):
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 "SELECT * FROM users WHERE user_id = ?", (user_id,)
             )
@@ -190,22 +191,28 @@ class Database:
 
     # ========== Admin Management ==========
     async def add_admin(self, user_id: str, added_by: int) -> bool:
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 "INSERT OR IGNORE INTO admins (user_id, added_by, added_at) VALUES (?, ?, ?)",
                 (user_id, added_by, self._now())
             )
             await self.conn.commit()
-            return cursor.rowcount > 0
+            if cursor.rowcount > 0:
+                await self._log_action("add_admin", added_by, details={"target_id": user_id})
+                return True
+            return False
 
     async def remove_admin(self, user_id: str) -> bool:
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 "DELETE FROM admins WHERE user_id = ?",
                 (user_id,)
             )
             await self.conn.commit()
-            return cursor.rowcount > 0
+            if cursor.rowcount > 0:
+                await self._log_action("remove_admin", user_id, details={"target_id": user_id})
+                return True
+            return False
 
     async def is_admin(self, user_id: str) -> bool:
         cursor = await self.conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
@@ -219,14 +226,14 @@ class Database:
     # ========== Work Operations ==========
     async def add_work(self, name: str, link: str, added_by: int):
         try:
-            async with self.lock:
+            async with self.data_lock:
                 await self.conn.execute(
                     '''INSERT INTO works (name, link, added_by, created_at, is_active)
                        VALUES (?, ?, ?, ?, ?)''',
                     (name, link, added_by, self._now(), 1)
                 )
                 await self.conn.commit()
-                await self.log_action("add_work", added_by, details={"name": name, "link": link})
+                await self._log_action("add_work", added_by, details={"name": name, "link": link})
                 return True, "✅ تمت الإضافة"
         except Exception:
             return False, "❌ العمل موجود مسبقاً"
@@ -246,14 +253,14 @@ class Database:
         return [dict(row) for row in rows]
 
     async def delete_work(self, name: str, deleted_by: int):
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 "UPDATE works SET is_active = 0 WHERE LOWER(name) = LOWER(?) AND is_active = 1",
                 (name,)
             )
             await self.conn.commit()
             if cursor.rowcount > 0:
-                await self.log_action("delete_work", deleted_by, details={"name": name})
+                await self._log_action("delete_work", deleted_by, details={"name": name})
                 return True
             return False
 
@@ -271,7 +278,7 @@ class Database:
 
         await self.get_or_create_user(user_id, username, display_name)
 
-        async with self.lock:
+        async with self.data_lock:
             try:
                 cursor = await self.conn.execute(
                     '''INSERT OR IGNORE INTO tasks
@@ -283,7 +290,7 @@ class Database:
                 )
                 await self.conn.commit()
                 if cursor.rowcount > 0:
-                    await self.log_action(
+                    await self._log_action(
                         "create_task", assigned_by, target_id=user_id,
                         details={"work": work_doc["name"], "chapter": chapter, "price": price}
                     )
@@ -308,7 +315,7 @@ class Database:
         return [dict(row) for row in rows]
 
     async def submit_task(self, user_id: str, work: str, chapter: int):
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 """
                 UPDATE tasks
@@ -319,14 +326,14 @@ class Database:
             )
             await self.conn.commit()
             success = cursor.rowcount > 0
-            await self.log_action(
+            await self._log_action(
                 "submit_task", int(user_id),
                 details={"work": work, "chapter": chapter, "success": success}
             )
             return success
 
     async def approve_task(self, user_id: str, work: str, chapter: int, approved_by: int):
-        async with self.lock:
+        async with self.data_lock:
             try:
                 await self.conn.execute("BEGIN IMMEDIATE")
 
@@ -368,7 +375,7 @@ class Database:
 
                 await self.conn.commit()
 
-                await self.log_action(
+                await self._log_action(
                     "financial_approve", approved_by, target_id=user_id,
                     details={"work": work, "chapter": chapter, "price": task["price"]},
                     log_type="financial"
@@ -382,7 +389,7 @@ class Database:
 
     async def reject_task(self, user_id: str, work: str, chapter: int,
                           rejected_by: int, reason: str):
-        async with self.lock:
+        async with self.data_lock:
             cursor = await self.conn.execute(
                 """
                 UPDATE tasks
@@ -394,7 +401,7 @@ class Database:
             )
             await self.conn.commit()
             if cursor.rowcount > 0:
-                await self.log_action(
+                await self._log_action(
                     "reject_task", rejected_by, target_id=user_id,
                     details={"work": work, "chapter": chapter, "reason": reason}
                 )
@@ -479,29 +486,28 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    # ========== Logging ==========
+    # ========== Logging (بدون Lock لأن INSERT ذري) ==========
+    async def _log_action(self, action: str, user_id: int, target_id: str = None,
+                         details: dict = None, log_type: str = "normal"):
+        # هذه الدالة لا تمسك أي lock عمداً
+        await self.conn.execute(
+            '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (action, user_id, target_id, json.dumps(details or {}), self._now(), log_type)
+        )
+        await self.conn.commit()
+
     async def log_action(self, action: str, user_id: int, target_id: str = None,
                          details: dict = None, log_type: str = "normal"):
-        async with self.lock:
-            await self.conn.execute(
-                '''INSERT INTO logs (action, user_id, target_id, details, timestamp, type)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                (action, user_id, target_id, json.dumps(details or {}), self._now(), log_type)
-            )
-            await self.conn.commit()
+        # واجهة عامة تستخدم الدالة الداخلية (للتوافق)
+        await self._log_action(action, user_id, target_id, details, log_type)
 
     async def delete_all_logs(self, user_id: int):
-        async with self.lock:
+        async with self.data_lock:
             try:
                 await self.conn.execute("BEGIN IMMEDIATE")
 
-                await self.conn.execute(
-                    """
-                    INSERT INTO logs (action, user_id, timestamp, type)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    ("delete_all_logs", user_id, self._now(), "admin")
-                )
+                await self._log_action("delete_all_logs", user_id, log_type="admin")
 
                 await self.conn.execute("DELETE FROM logs WHERE type != 'financial'")
                 await self.conn.commit()
