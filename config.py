@@ -7,11 +7,9 @@ class Config:
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
     if not DISCORD_TOKEN:
         raise ValueError("❌ DISCORD_TOKEN غير موجود في ملف .env")
-    
-    # Owner ID (يُضبط عبر الأمر /set_owner)
-    OWNER_ID = None
 
-    # إعدادات البوت
+    OWNER_ID = None  # يتم تحميله من قاعدة البيانات عند التشغيل
+
     COMMAND_COOLDOWN = 3
     ADMIN_COOLDOWN = 2
     MAX_PRICE = 10000
