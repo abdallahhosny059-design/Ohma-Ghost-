@@ -191,18 +191,21 @@ class Database:
     # ========== Admin Management ==========
     async def add_admin(self, user_id: str, added_by: int) -> bool:
         async with self.lock:
-            await self.conn.execute(
+            cursor = await self.conn.execute(
                 "INSERT OR IGNORE INTO admins (user_id, added_by, added_at) VALUES (?, ?, ?)",
                 (user_id, added_by, self._now())
             )
             await self.conn.commit()
-            return self.conn.total_changes > 0
+            return cursor.rowcount > 0
 
     async def remove_admin(self, user_id: str) -> bool:
         async with self.lock:
-            await self.conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+            cursor = await self.conn.execute(
+                "DELETE FROM admins WHERE user_id = ?",
+                (user_id,)
+            )
             await self.conn.commit()
-            return self.conn.total_changes > 0
+            return cursor.rowcount > 0
 
     async def is_admin(self, user_id: str) -> bool:
         cursor = await self.conn.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
@@ -245,10 +248,11 @@ class Database:
     async def delete_work(self, name: str, deleted_by: int):
         async with self.lock:
             cursor = await self.conn.execute(
-                "UPDATE works SET is_active = 0 WHERE LOWER(name) = LOWER(?)", (name,)
+                "UPDATE works SET is_active = 0 WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+                (name,)
             )
+            await self.conn.commit()
             if cursor.rowcount > 0:
-                await self.conn.commit()
                 await self.log_action("delete_work", deleted_by, details={"name": name})
                 return True
             return False
@@ -269,7 +273,7 @@ class Database:
 
         async with self.lock:
             try:
-                await self.conn.execute(
+                cursor = await self.conn.execute(
                     '''INSERT OR IGNORE INTO tasks
                        (user_id, username, display_name, work, chapter, price,
                         status, assigned_by, created_at)
@@ -278,7 +282,7 @@ class Database:
                      "pending", assigned_by, self._now())
                 )
                 await self.conn.commit()
-                if self.conn.total_changes > 0:
+                if cursor.rowcount > 0:
                     await self.log_action(
                         "create_task", assigned_by, target_id=user_id,
                         details={"work": work_doc["name"], "chapter": chapter, "price": price}
