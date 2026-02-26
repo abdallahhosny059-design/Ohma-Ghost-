@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.db_path = "/data/bot_database.db"  # Railway Volume path
+        self.db_path = "bot_database.db"  # Railway بدون Volume
         self.initialized = False
     
     async def initialize(self):
@@ -18,9 +18,6 @@ class Database:
             return
         
         try:
-            # Ensure data directory exists
-            os.makedirs("/data", exist_ok=True)
-            
             async with aiosqlite.connect(self.db_path) as db:
                 # Enable foreign keys
                 await db.execute("PRAGMA foreign_keys = ON;")
@@ -307,7 +304,7 @@ class Database:
             
             cursor = await db.execute(
                 '''UPDATE tasks SET status = ?, submitted_at = ?
-                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'''',
+                   WHERE user_id = ? AND work = ? AND chapter = ? AND status = 'pending'""",
                 ("submitted", datetime.now(pytz.UTC), user_id, work, chapter)
             )
             await db.commit()
