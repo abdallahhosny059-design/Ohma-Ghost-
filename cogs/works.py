@@ -31,11 +31,7 @@ class WorksCog(commands.Cog):
         await interaction.response.defer()
         try:
             success, message = await db.add_work(name, link, str(interaction.user.id))
-            embed = discord.Embed(
-                title="✅ تمت الإضافة" if success else "❌ فشل",
-                description=message,
-                color=discord.Color.green() if success else discord.Color.red()
-            )
+            embed = discord.Embed(title="✅ تمت الإضافة" if success else "❌ فشل", description=message, color=discord.Color.green() if success else discord.Color.red())
             await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"Error in add_work: {e}")
@@ -48,20 +44,12 @@ class WorksCog(commands.Cog):
         try:
             work = await db.get_work_by_name(name)
             if work:
-                embed = discord.Embed(
-                    title=f"📚 {work['name']}",
-                    description=work['link'],
-                    color=discord.Color.blue()
-                )
+                embed = discord.Embed(title=f"📚 {work['name']}", description=work['link'], color=discord.Color.blue())
                 await interaction.followup.send(embed=embed)
             else:
                 results = await db.search_works(name)
                 if results:
-                    embed = discord.Embed(
-                        title="🔍 نتائج البحث",
-                        description="اختر من الأعمال التالية:",
-                        color=discord.Color.orange()
-                    )
+                    embed = discord.Embed(title="🔍 نتائج البحث", description="اختر من الأعمال التالية:", color=discord.Color.orange())
                     for w in results:
                         embed.add_field(name=w['name'], value=w['link'], inline=False)
                     await interaction.followup.send(embed=embed)
