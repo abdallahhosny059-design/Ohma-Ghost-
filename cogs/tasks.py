@@ -2,23 +2,27 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-from database import db
+from database import db          # 👈 هذا السطر المهم (استيراد db)
 from config import config
 
 logger = logging.getLogger(__name__)
 
 def is_admin():
     async def predicate(interaction: discord.Interaction):
+        # التحقق من الأدمن في البوت أولاً
+        if await db.is_admin(str(interaction.user.id)):
+            return True
+        # إذا لم يكن في قائمة البوت، نتحقق من صلاحية الأدمن في ديسكورد
         if interaction.user.guild_permissions.administrator:
             return True
-        await interaction.response.send_message("❌ يحتاج صلاحية أدمن", ephemeral=True)
+        await interaction.response.send_message("❌ هذا الأمر يتطلب صلاحية أدمن في البوت أو في السيرفر", ephemeral=True)
         return False
     return app_commands.check(predicate)
 
 class TasksCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-    
+
     @app_commands.command(name="تكليف", description="تكليف عضو بمهمة (أدمن فقط)")
     @app_commands.describe(
         member="العضو",
@@ -36,15 +40,12 @@ class TasksCog(commands.Cog):
         chapter: int,
         price: int
     ):
-        # Validate price
         if price <= 0:
             await interaction.response.send_message("❌ السعر يجب أن يكون أكبر من 0", ephemeral=True)
             return
         if price > config.MAX_PRICE:
             await interaction.response.send_message(f"❌ السعر كبير جداً (الحد الأقصى {config.MAX_PRICE})", ephemeral=True)
             return
-        
-        # Validate chapter
         if chapter <= 0:
             await interaction.response.send_message("❌ رقم الفصل غير صالح", ephemeral=True)
             return
@@ -75,7 +76,7 @@ class TasksCog(commands.Cog):
                 pass
         else:
             await interaction.followup.send(message)
-    
+
     @app_commands.command(name="مهماتي", description="عرض مهامي")
     @app_commands.checks.cooldown(1, config.COMMAND_COOLDOWN)
     async def my_tasks(self, interaction: discord.Interaction):
@@ -104,7 +105,7 @@ class TasksCog(commands.Cog):
             embed.add_field(name="✅ مسلمة", value=text, inline=False)
         
         await interaction.followup.send(embed=embed)
-    
+
     @app_commands.command(name="تسليم", description="تسليم مهمة")
     @app_commands.describe(work="اسم العمل", chapter="رقم الفصل")
     @app_commands.checks.cooldown(1, config.COMMAND_COOLDOWN)
@@ -117,7 +118,7 @@ class TasksCog(commands.Cog):
             await interaction.followup.send(f"✅ تم تسليم {work} فصل {chapter}")
         else:
             await interaction.followup.send("❌ لا توجد مهمة pending")
-    
+
     @app_commands.command(name="اعتماد", description="اعتماد مهمة (أدمن فقط)")
     @app_commands.describe(member="العضو", work="اسم العمل", chapter="رقم الفصل")
     @is_admin()
@@ -152,7 +153,7 @@ class TasksCog(commands.Cog):
                 pass
         else:
             await interaction.followup.send("❌ لم يتم العثور على المهمة")
-    
+
     @app_commands.command(name="رفض", description="رفض مهمة (أدمن فقط)")
     @app_commands.describe(member="العضو", work="اسم العمل", chapter="رقم الفصل", reason="السبب")
     @is_admin()
