@@ -33,9 +33,19 @@ class ManhwaBot(commands.Bot):
 
 bot = ManhwaBot()
 
+# ========== تحديد Owner ==========
 @bot.event
 async def on_ready():
     logger.info(f'✅ Bot online as {bot.user}')
+    
+    # تعيين أول مالك سيرفر يوجد فيه البوت كـ Owner
+    if config.OWNER_ID is None:
+        for guild in bot.guilds:
+            if guild.owner:
+                config.OWNER_ID = guild.owner.id
+                logger.info(f"👑 Owner set to: {guild.owner.name} (ID: {config.OWNER_ID})")
+                break
+    
     await bot.change_presence(
         activity=discord.Game(name="📚 إدارة فريق الترجمة"),
         status=discord.Status.online
@@ -44,12 +54,10 @@ async def on_ready():
 # ========== أوامر اختبار ==========
 @bot.command(name='ping')
 async def ping(ctx):
-    """أمر اختبار - يرجع Pong"""
     await ctx.send('🏓 Pong!')
 
 @bot.command(name='test')
 async def test(ctx):
-    """أمر اختبار - يتأكد أن البوت شغال"""
     await ctx.send('✅ البوت شغال!')
 
 # ========== معالجة الأوامر ==========
@@ -67,7 +75,6 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CommandOnCooldown):
         await ctx.send(f"⏳ انتظر {error.retry_after:.1f} ثانية")
     elif isinstance(error, commands.CommandNotFound):
-        # تجاهل الأوامر غير الموجودة
         pass
     else:
         logger.error(f"Command error: {error}")
