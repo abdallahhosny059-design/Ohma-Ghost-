@@ -30,10 +30,16 @@ bot = ManhwaBot()
 @bot.event
 async def on_ready():
     logger.info(f'✅ Bot online as {bot.user}')
-    if config.OWNER_ID is None:
-        logger.info("👑 No owner set. Use /set_owner to set yourself as owner.")
+
+    # تحميل owner_id من قاعدة البيانات إلى config
+    owner_id = await db.get_owner_id()
+    if owner_id:
+        config.OWNER_ID = int(owner_id)
+        logger.info(f"👑 Owner loaded from DB: {config.OWNER_ID}")
     else:
-        logger.info(f"👑 Owner ID: {config.OWNER_ID}")
+        config.OWNER_ID = None
+        logger.info("👑 No owner set. Use /set_owner to set yourself as owner.")
+
     await bot.change_presence(activity=discord.Game(name="📚 إدارة فريق الترجمة"), status=discord.Status.online)
 
 @bot.command(name='ping')
@@ -69,6 +75,7 @@ async def on_app_command_error(interaction: discord.Interaction, error):
     elif isinstance(error, app_commands.CommandOnCooldown):
         await interaction.response.send_message(f"⏳ انتظر {error.retry_after:.1f} ثانية", ephemeral=True)
     elif isinstance(error, app_commands.CheckFailure):
+        # تم التعامل معه داخل check
         pass
     else:
         logger.error(f"Unhandled app command error: {error}")
