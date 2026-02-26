@@ -377,22 +377,23 @@ class Database:
     async def get_user_tasks(self, user_id: str, status: str = None):
         async with self.data_lock:
             if status:
-                cursor = await self.data_conn.execute(
-                    "SELECT * FROM tasks WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
-                    (user_id, status)
-                )
+                cursor = await self.data_conn.execute('''
+                    SELECT t.*, w.name as work_name
+                    FROM tasks t
+                    JOIN works w ON t.work_id = w.id
+                    WHERE t.user_id = ? AND t.status = ?
+                    ORDER BY t.created_at DESC
+                ''', (user_id, status))
             else:
-                cursor = await self.data_conn.execute(
-                    "SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC", (user_id,)
-                )
+                cursor = await self.data_conn.execute('''
+                    SELECT t.*, w.name as work_name
+                    FROM tasks t
+                    JOIN works w ON t.work_id = w.id
+                    WHERE t.user_id = ?
+                    ORDER BY t.created_at DESC
+                ''', (user_id,))
             rows = await cursor.fetchall()
-            tasks = []
-            for row in rows:
-                task = dict(row)
-                work = await self._get_work_by_id(task["work_id"])
-                task["work_name"] = work["name"] if work else "غير معروف"
-                tasks.append(task)
-            return tasks
+            return [dict(r) for r in rows]
 
     async def submit_task(self, user_id: str, work_id: int, chapter: int):
         async with self.data_lock:
@@ -536,17 +537,16 @@ class Database:
             total_earned = row["total"]
             chapters_count = row["count"]
 
-            cursor = await self.data_conn.execute(
-                "SELECT * FROM chapters WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
-                (user_id,)
-            )
+            cursor = await self.data_conn.execute('''
+                SELECT c.*, w.name as work_name
+                FROM chapters c
+                JOIN works w ON c.work_id = w.id
+                WHERE c.user_id = ?
+                ORDER BY c.created_at DESC
+                LIMIT 10
+            ''', (user_id,))
             recent_rows = await cursor.fetchall()
-            recent_list = []
-            for ch in recent_rows:
-                ch_dict = dict(ch)
-                work = await self._get_work_by_id(ch_dict["work_id"])
-                ch_dict["work_name"] = work["name"] if work else "غير معروف"
-                recent_list.append(ch_dict)
+            recent_list = [dict(r) for r in recent_rows]
 
             cursor = await self.data_conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'pending'",
