@@ -24,7 +24,6 @@ class OwnerCog(commands.Cog):
 
     @app_commands.command(name="set_owner", description="تعيين نفسك كأونر للبوت (لأول مرة)")
     async def set_owner(self, interaction: discord.Interaction):
-        """يسمح لأول شخص يستخدم الأمر بأن يصبح الأونر"""
         if config.OWNER_ID is not None:
             await interaction.response.send_message("❌ الأونر محدد مسبقاً.", ephemeral=True)
             return
@@ -32,6 +31,46 @@ class OwnerCog(commands.Cog):
         config.OWNER_ID = interaction.user.id
         await interaction.response.send_message(f"✅ تم تعيينك كأونر للبوت! (ID: {config.OWNER_ID})", ephemeral=True)
         logger.info(f"👑 Owner set to {interaction.user.name} (ID: {config.OWNER_ID}) via command.")
+
+    # ========== أوامر إدارة الأدمن ==========
+    @is_owner()
+    @app_commands.command(name="اضافة_ادمن", description="إضافة عضو كأدمن في البوت (الأونر فقط)")
+    @app_commands.describe(member="العضو المراد إضافته")
+    async def add_admin(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+        success = await db.add_admin(str(member.id), interaction.user.id)
+        if success:
+            await interaction.followup.send(f"✅ تمت إضافة {member.mention} كأدمن في البوت.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"⚠️ {member.mention} هو بالفعل أدمن.", ephemeral=True)
+
+    @is_owner()
+    @app_commands.command(name="ازالة_ادمن", description="إزالة عضو من قائمة الأدمن (الأونر فقط)")
+    @app_commands.describe(member="العضو المراد إزالته")
+    async def remove_admin(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+        success = await db.remove_admin(str(member.id))
+        if success:
+            await interaction.followup.send(f"✅ تمت إزالة {member.mention} من قائمة الأدمن.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"⚠️ {member.mention} ليس أدمن في البوت.", ephemeral=True)
+
+    @is_owner()
+    @app_commands.command(name="قائمة_الادمن", description="عرض قائمة الأدمن في البوت")
+    async def list_admins(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        admins = await db.get_admins()
+        if not admins:
+            await interaction.followup.send("📭 لا يوجد أدمن حالياً.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(title="👥 قائمة الأدمن", color=discord.Color.blue())
+        for admin in admins:
+            user = self.bot.get_user(int(admin["user_id"]))
+            name = user.name if user else f"Unknown ({admin['user_id']})"
+            embed.add_field(name=name, value=f"منذ: {admin['added_at']}", inline=False)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="حذف_السجلات", description="حذف جميع السجلات (الأونر فقط)")
     @is_owner()
@@ -49,7 +88,6 @@ class OwnerCog(commands.Cog):
         embed.add_field(name="⏰ وقت التشغيل", value="شغال", inline=True)
         embed.add_field(name="👤 الأونر", value=f"<@{config.OWNER_ID}>" if config.OWNER_ID else "لم يحدد", inline=True)
 
-        # إحصائيات SQLite
         try:
             async with db.conn.execute("SELECT COUNT(*) FROM users") as cursor:
                 users_count = (await cursor.fetchone())[0]
