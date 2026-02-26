@@ -13,7 +13,7 @@ def is_admin():
             if await db.is_admin(str(interaction.user.id)):
                 return True
         except Exception as e:
-            logger.error(f"Error checking admin status: {e}")
+            logger.error(f"Error checking admin in DB: {e}")
         if interaction.user.guild_permissions.administrator:
             return True
         await interaction.response.send_message("❌ هذا الأمر يتطلب صلاحية أدمن في البوت أو في السيرفر", ephemeral=True)
@@ -29,7 +29,7 @@ class TasksCog(commands.Cog):
     @is_admin()
     @app_commands.checks.cooldown(1, config.ADMIN_COOLDOWN)
     async def assign_task(
-        self, 
+        self,
         interaction: discord.Interaction,
         member: discord.Member,
         work: str,
@@ -54,7 +54,7 @@ class TasksCog(commands.Cog):
                 user_id=str(member.id),
                 username=member.name,
                 display_name=member.display_name,
-                work=work,
+                work=work.strip(),
                 chapter=chapter,
                 price=price,
                 assigned_by=interaction.user.id
@@ -68,6 +68,7 @@ class TasksCog(commands.Cog):
                 )
                 await interaction.followup.send(f"✅ {member.mention}", embed=embed)
 
+                # محاولة إرسال رسالة خاصة للعضو
                 try:
                     await member.send(f"📢 مهمة جديدة: {work} فصل {chapter} بسعر ${price}")
                 except:
@@ -118,7 +119,7 @@ class TasksCog(commands.Cog):
         await interaction.response.defer()
 
         try:
-            success = await db.submit_task(str(interaction.user.id), work, chapter)
+            success = await db.submit_task(str(interaction.user.id), work.strip(), chapter)
             if success:
                 await interaction.followup.send(f"✅ تم تسليم {work} فصل {chapter}")
             else:
@@ -143,7 +144,7 @@ class TasksCog(commands.Cog):
         try:
             task = await db.approve_task(
                 user_id=str(member.id),
-                work=work,
+                work=work.strip(),
                 chapter=chapter,
                 approved_by=interaction.user.id
             )
@@ -183,7 +184,7 @@ class TasksCog(commands.Cog):
         try:
             success = await db.reject_task(
                 user_id=str(member.id),
-                work=work,
+                work=work.strip(),
                 chapter=chapter,
                 rejected_by=interaction.user.id,
                 reason=reason
