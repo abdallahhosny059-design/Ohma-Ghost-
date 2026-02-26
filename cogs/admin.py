@@ -3,18 +3,30 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 from datetime import datetime, timedelta
-from database import db          # 👈 استيراد db
+from database import db
 from config import config
 
 logger = logging.getLogger(__name__)
 
 def is_admin():
     async def predicate(interaction: discord.Interaction):
-        if await db.is_admin(str(interaction.user.id)):
-            return True
+        try:
+            if await db.is_admin(str(interaction.user.id)):
+                return True
+        except Exception as e:
+            logger.error(f"Error checking admin in DB: {e}")
         if interaction.user.guild_permissions.administrator:
             return True
-        await interaction.response.send_message("❌ يحتاج صلاحية أدمن", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "❌ هذا الأمر يتطلب صلاحية أدمن في البوت أو في السيرفر",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "❌ هذا الأمر يتطلب صلاحية أدمن في البوت أو في السيرفر",
+                ephemeral=True
+            )
         return False
     return app_commands.check(predicate)
 
@@ -25,9 +37,13 @@ class AdminCog(commands.Cog):
     @app_commands.command(name="تقرير_عام", description="تقرير عام للفريق (أدمن فقط)")
     @is_admin()
     async def general_report(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         stats = await db.get_team_stats()
-        embed = discord.Embed(title="📊 تقرير الفريق", color=discord.Color.blue(), timestamp=datetime.now())
+        embed = discord.Embed(
+            title="📊 تقرير الفريق",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
         embed.add_field(name="📚 إجمالي الفصول", value=stats['total_chapters'], inline=True)
         embed.add_field(name="💰 إجمالي الأرباح", value=f"${stats['total_earnings']}", inline=True)
         embed.add_field(name="⏳ مهام pending", value=stats['pending_tasks'], inline=True)
@@ -37,12 +53,12 @@ class AdminCog(commands.Cog):
             for i, user in enumerate(stats['top_users'], 1):
                 top_text += f"{i}. {user['display_name']}: {user['count']} فصول (${user['total']})\n"
             embed.add_field(name="🏆 أفضل 5 أعضاء", value=top_text, inline=False)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="تقرير_اسبوعي", description="تقرير آخر 7 أيام (أدمن فقط)")
     @is_admin()
     async def weekly_report(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         weekly = await db.get_weekly_report()
         embed = discord.Embed(
             title="📆 تقرير الأسبوع",
@@ -58,15 +74,18 @@ class AdminCog(commands.Cog):
                 )
         else:
             embed.description = "لا توجد إنجازات هذا الأسبوع"
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="تفاصيل", description="تفاصيل عضو معين (أدمن فقط)")
     @app_commands.describe(member="العضو")
     @is_admin()
     async def user_details(self, interaction: discord.Interaction, member: discord.Member):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         stats = await db.get_user_stats(str(member.id))
-        embed = discord.Embed(title=f"📋 تفاصيل {member.display_name}", color=discord.Color.orange())
+        embed = discord.Embed(
+            title=f"📋 تفاصيل {member.display_name}",
+            color=discord.Color.orange()
+        )
         embed.add_field(name="💰 الإجمالي", value=f"${stats['total_earned']}", inline=True)
         embed.add_field(name="📚 عدد الفصول", value=stats['chapters_count'], inline=True)
         embed.add_field(name="⏳ مهام pending", value=stats['pending_tasks'], inline=True)
@@ -77,7 +96,7 @@ class AdminCog(commands.Cog):
                 for c in stats['recent_chapters'][:5]
             ])
             embed.add_field(name="🆕 آخر الإنجازات", value=recent, inline=False)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(AdminCog(bot))
