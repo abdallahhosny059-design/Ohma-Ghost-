@@ -27,7 +27,7 @@ class ManhwaBot(commands.Bot):
         await self.load_extension("cogs.admin")
         await self.load_extension("cogs.owner")
         
-        # Sync commands - faster with guild if available
+        # ✅ Sync commands instantly using guild ID
         if config.GUILD_OBJ:
             self.tree.copy_global_to(guild=config.GUILD_OBJ)
             await self.tree.sync(guild=config.GUILD_OBJ)
