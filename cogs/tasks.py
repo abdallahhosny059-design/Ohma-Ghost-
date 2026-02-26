@@ -26,22 +26,10 @@ class TasksCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="تكليف", description="تكليف عضو بمهمة (أدمن فقط)")
-    @app_commands.describe(
-        member="العضو",
-        work="اسم العمل",
-        chapter="رقم الفصل",
-        price="السعر بالدولار"
-    )
+    @app_commands.describe(member="العضو", work="اسم العمل", chapter="رقم الفصل", price="السعر بالدولار")
     @is_admin()
     @app_commands.checks.cooldown(1, config.ADMIN_COOLDOWN)
-    async def assign_task(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        work: str,
-        chapter: int,
-        price: int
-    ):
+    async def assign_task(self, interaction: discord.Interaction, member: discord.Member, work: str, chapter: int, price: int):
         if price <= 0:
             await interaction.response.send_message("❌ السعر يجب أن يكون أكبر من 0", ephemeral=True)
             return
@@ -65,11 +53,7 @@ class TasksCog(commands.Cog):
         )
 
         if success:
-            embed = discord.Embed(
-                title="📋 مهمة جديدة",
-                description=f"**العمل:** {work}\n**الفصل:** {chapter}\n**السعر:** ${price}",
-                color=discord.Color.green()
-            )
+            embed = discord.Embed(title="📋 مهمة جديدة", description=f"**العمل:** {work}\n**الفصل:** {chapter}\n**السعر:** ${price}", color=discord.Color.green())
             await interaction.followup.send(f"✅ {member.mention}", embed=embed)
             try:
                 await member.send(f"📢 مهمة جديدة: {work} فصل {chapter} بسعر ${price}")
@@ -86,10 +70,7 @@ class TasksCog(commands.Cog):
         if not tasks:
             await interaction.followup.send("📭 لا يوجد مهام")
             return
-        embed = discord.Embed(
-            title=f"📋 مهام {interaction.user.display_name}",
-            color=discord.Color.blue()
-        )
+        embed = discord.Embed(title=f"📋 مهام {interaction.user.display_name}", color=discord.Color.blue())
         pending = [t for t in tasks if t['status'] == 'pending']
         submitted = [t for t in tasks if t['status'] == 'submitted']
         if pending:
@@ -115,21 +96,11 @@ class TasksCog(commands.Cog):
     @app_commands.describe(member="العضو", work="اسم العمل", chapter="رقم الفصل")
     @is_admin()
     @app_commands.checks.cooldown(1, config.ADMIN_COOLDOWN)
-    async def approve_task(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        work: str,
-        chapter: int
-    ):
+    async def approve_task(self, interaction: discord.Interaction, member: discord.Member, work: str, chapter: int):
         await interaction.response.defer()
         task = await db.approve_task_by_name(str(member.id), work, chapter, str(interaction.user.id))
         if task:
-            embed = discord.Embed(
-                title="✅ تم الاعتماد",
-                description=f"**{work} فصل {chapter}**\n💰 ${task['price']}",
-                color=discord.Color.green()
-            )
+            embed = discord.Embed(title="✅ تم الاعتماد", description=f"**{work} فصل {chapter}**\n💰 ${task['price']}", color=discord.Color.green())
             await interaction.followup.send(embed=embed)
             try:
                 await member.send(f"✅ تم اعتماد {work} فصل {chapter} (💰 ${task['price']})")
@@ -142,14 +113,7 @@ class TasksCog(commands.Cog):
     @app_commands.describe(member="العضو", work="اسم العمل", chapter="رقم الفصل", reason="السبب")
     @is_admin()
     @app_commands.checks.cooldown(1, config.ADMIN_COOLDOWN)
-    async def reject_task(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        work: str,
-        chapter: int,
-        reason: str
-    ):
+    async def reject_task(self, interaction: discord.Interaction, member: discord.Member, work: str, chapter: int, reason: str):
         await interaction.response.defer()
         success = await db.reject_task_by_name(str(member.id), work, chapter, str(interaction.user.id), reason)
         if success:
