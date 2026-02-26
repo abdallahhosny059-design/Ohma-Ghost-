@@ -27,14 +27,9 @@ class ManhwaBot(commands.Bot):
         await self.load_extension("cogs.admin")
         await self.load_extension("cogs.owner")
         
-        # ✅ Sync commands instantly using guild ID
-        if config.GUILD_OBJ:
-            self.tree.copy_global_to(guild=config.GUILD_OBJ)
-            await self.tree.sync(guild=config.GUILD_OBJ)
-            logger.info(f"✅ Synced commands to guild {config.GUILD_ID}")
-        else:
-            await self.tree.sync()
-            logger.info("✅ Synced global commands")
+        # Sync commands globally
+        await self.tree.sync()
+        logger.info("✅ Synced global commands")
 
 bot = ManhwaBot()
 
@@ -46,12 +41,34 @@ async def on_ready():
         status=discord.Status.online
     )
 
+# ========== أوامر اختبار ==========
+@bot.command(name='ping')
+async def ping(ctx):
+    """أمر اختبار - يرجع Pong"""
+    await ctx.send('🏓 Pong!')
+
+@bot.command(name='test')
+async def test(ctx):
+    """أمر اختبار - يتأكد أن البوت شغال"""
+    await ctx.send('✅ البوت شغال!')
+
+# ========== معالجة الأوامر ==========
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
+
+# ========== معالجة الأخطاء ==========
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ ليس لديك صلاحية")
     elif isinstance(error, commands.CommandOnCooldown):
         await ctx.send(f"⏳ انتظر {error.retry_after:.1f} ثانية")
+    elif isinstance(error, commands.CommandNotFound):
+        # تجاهل الأوامر غير الموجودة
+        pass
     else:
         logger.error(f"Command error: {error}")
         await ctx.send("❌ حدث خطأ")
