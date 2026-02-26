@@ -33,18 +33,14 @@ class ManhwaBot(commands.Bot):
 
 bot = ManhwaBot()
 
-# ========== تحديد Owner ==========
+# ========== تحديد Owner (يدوياً عبر الأمر) ==========
 @bot.event
 async def on_ready():
     logger.info(f'✅ Bot online as {bot.user}')
     
-    # تعيين أول مالك سيرفر يوجد فيه البوت كـ Owner
+    # إذا لم يكن هناك Owner، نتركه فارغاً
     if config.OWNER_ID is None:
-        for guild in bot.guilds:
-            if guild.owner:
-                config.OWNER_ID = guild.owner.id
-                logger.info(f"👑 Owner set to: {guild.owner.name} (ID: {config.OWNER_ID})")
-                break
+        logger.info("👑 No owner set. Use /set_owner to set yourself as owner.")
     
     await bot.change_presence(
         activity=discord.Game(name="📚 إدارة فريق الترجمة"),
