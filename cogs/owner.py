@@ -18,23 +18,24 @@ def is_owner():
 class OwnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-    
+
     @app_commands.command(name="حذف_السجلات", description="حذف جميع السجلات (الأونر فقط)")
     @is_owner()
     async def delete_logs(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await db.delete_all_logs(interaction.user.id)
         await interaction.followup.send("✅ تم حذف جميع السجلات (ما عدا المالية)", ephemeral=True)
-    
-    @app_commands.command(name="حالة_البوت", description="حالة البوت (الأونر فقط)")
+
+    @app_commands.command(name="حالة_البوت", description="عرض حالة البوت (الأونر فقط)")
     @is_owner()
-    async def bot_status(self, interaction: discord.Interaction):
+    # ✅ تغيير اسم الدالة من bot_status إلى status_command (لا يبدأ بـ bot_)
+    async def status_command(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        
+
         embed = discord.Embed(title="🤖 حالة البوت", color=discord.Color.green())
         embed.add_field(name="⏰ وقت التشغيل", value="شغال", inline=True)
         embed.add_field(name="👤 الأونر", value=f"<@{config.OWNER_ID}>" if config.OWNER_ID else "لم يحدد", inline=True)
-        
+
         # استخدام استعلامات SQLite الصحيحة
         try:
             async with db.conn.execute("SELECT COUNT(*) FROM users") as cursor:
@@ -50,13 +51,13 @@ class OwnerCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error getting counts: {e}")
             users_count = works_count = tasks_count = chapters_count = logs_count = 0
-        
+
         embed.add_field(name="👥 الأعضاء", value=users_count, inline=True)
         embed.add_field(name="📚 الأعمال", value=works_count, inline=True)
         embed.add_field(name="📋 المهام", value=tasks_count, inline=True)
         embed.add_field(name="✅ الفصول", value=chapters_count, inline=True)
         embed.add_field(name="📝 السجلات", value=logs_count, inline=True)
-        
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
